@@ -3,20 +3,25 @@
 class Ecommerce
 {
     private $providers = [];
+    private $providersByName = [];
 
     public function __construct(array $providers = [])
     {
         $this->providers = $providers;
+        foreach ($providers as $p) {
+            if (method_exists($p, 'getName')) {
+                $this->providersByName[$p->getName()] = $p;
+            }
+        }
     }
 
-    # filtra vendedores por nombre
     private function filterProviders(array $platforms = []): array
     {
         if (empty($platforms)) return $this->providers;
         $out = [];
-        foreach ($this->providers as $p) {
-            if (method_exists($p, 'getName') && in_array($p->getName(), $platforms)) {
-                $out[] = $p;
+        foreach ($platforms as $name) {
+            if (isset($this->providersByName[$name])) {
+                $out[] = $this->providersByName[$name];
             }
         }
         return $out;
@@ -28,38 +33,41 @@ class Ecommerce
     {
         $providers = $this->filterProviders($platforms);
         $itemsByPlatform = [];
-
         $db = (new Database())->connect();
 
         foreach ($providers as $provider) {
             $rawList = $provider->fetchRawProducts();
             $normalizedList = [];
+            $values = [];
 
             foreach ($rawList as $raw) {
+                $values[] = [
+                    $session['mypos_id'] ?? '',
+                    (int)($session['client_id'] ?? 0),
+                    $raw['item_id'] ?? '',
+                    $raw['padre_id'] ?? '',
+                    $provider->getName(),
+                    $raw['item_nombre'] ?? '',
+                    json_encode($raw['variants'] ?? [], JSON_UNESCAPED_UNICODE),
+                    json_encode($raw['categoria'] ?? [], JSON_UNESCAPED_UNICODE),
+                    isset($raw['precio']) ? (float)$raw['precio'] : null,
+                    $raw['codigo_barra'] ?? null,
+                    $raw['codigo_interno'] ?? null,
+                    $raw['descripcion'] ?? '',
+                    (int)($raw['stock_actual'] ?? 0),
+                    (int)($raw['servicio'] ?? 0)
+                ];
+                $normalizedList[] = $raw;
+            }
 
-                $mypos_id     = $session['mypos_id'];
-                $client_id    = (int)$session['client_id'];
-                $item_id      = $raw['item_id'];
-                $padre_id     = $raw['padre_id'];
-                $origen       = $provider->getName();
-                $item_nombre  = $raw['item_nombre'];
-
-                $variantsJson = json_encode($raw['variants'] ?? [], JSON_UNESCAPED_UNICODE);
-                $categoriaJson = json_encode($raw['categoría'], JSON_UNESCAPED_UNICODE);
-
-                $descripcion  = $raw['descripcion'];
-                $stock_actual = (int)$raw['stock_actual'];
-                $servicio     = (int)$raw['servicio'];
-                $precio       = isset($raw['precio']) ? (float)$raw['precio'] : null;
-                $codigo_barra = $raw['codigo_barra'] ?? null;
-                $codigo_interno = $raw['codigo_interno'] ?? null;
-
+            if (!empty($values)) {
+                $placeholders = implode(',', array_fill(0, count($values), '(?,?,?,?,?,?,?,?,?,?,?,?,?,?)'));
                 $stmt = $db->prepare("
                     INSERT INTO products (
                         mypos_id, client_id, item_id, padre_id, origen,
                         item_nombre, variants, categoria, precio, codigo_barra, codigo_interno,
                         descripcion, stock_actual, servicio
-                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ) VALUES $placeholders
                     ON DUPLICATE KEY UPDATE
                         padre_id = VALUES(padre_id),
                         item_nombre = VALUES(item_nombre),
@@ -74,93 +82,75 @@ class Ecommerce
                         updated_at = CURRENT_TIMESTAMP
                 ");
 
-                $stmt->bind_param(
-                    "sisssssssdssii",
-                    $mypos_id,
-                    $client_id,
-                    $item_id,
-                    $padre_id,
-                    $origen,
-                    $item_nombre,
-                    $variantsJson,
-                    $categoriaJson,
-                    $precio,
-                    $codigo_barra,
-                    $codigo_interno,
-                    $descripcion,
-                    $stock_actual,
-                    $servicio
-                );
+                $rowTypes = 'sissssssdsssii';
+                $types = str_repeat($rowTypes, count($values));
 
+                $flat = [];
+                foreach ($values as $row) {
+                    foreach ($row as $field) {
+                        $flat[] = $field;
+                    }
+                }
+
+                $stmt->bind_param($types, ...$flat);
                 $stmt->execute();
                 $stmt->close();
-
-                $normalizedList[] = $raw;
             }
 
             $itemsByPlatform[$provider->getName()] = $normalizedList;
         }
 
-        return [
-            'action' => 'getApiProducts',
-            'items' => $itemsByPlatform
-        ];
+        return ['action' => 'getApiProducts', 'items' => $itemsByPlatform];
     }
 
-    public function getProductsFromDb(array $params = []): array
+    public function getProductsFromDb(array $session = [], int $limit = 100, int $offset = 0): array
     {
         $db = (new Database())->connect();
         $items = [];
-
-        $sql = "SELECT 
-                    item_id, item_aizu_id, padre_id, item_nombre, categoria, precio, 
-                    codigo_barra, codigo_interno, stock_actual, descripcion, 
-                    ficha_tecnica, servicio, variants, fiscal_unidad, fiscal_clave, 
-                    fiscal_iva, fiscal_ieps, dim_alto, dim_ancho, dim_largo, 
-                    dim_peso, origen, created_at, updated_at
-                FROM products";
-
-        $result = $db->query($sql);
+        
+        $clientId = (int)($session['client_id'] ?? 0);
+        $myposId = $session['mypos_id'] ?? '';
+        
+        $sql = "SELECT * FROM products WHERE client_id = ? AND mypos_id = ? LIMIT ? OFFSET ?";
+        $stmt = $db->prepare($sql);
+        $stmt->bind_param("isii", $clientId, $myposId, $limit, $offset);
+        $stmt->execute();
+        $result = $stmt->get_result();
 
         while ($row = $result->fetch_assoc()) {
-
             $items[] = [
-                'item_id'        => $row['item_id'],
-                'item_aizu_id'   => $row['item_aizu_id'],
-                'padre_id'       => $row['padre_id'],
-                'item_nombre'    => $row['item_nombre'],
-                'categoría'      => !empty($row['categoria']) ? json_decode($row['categoria'], true) : [],
-                'precio'         => $row['precio'] !== null ? (float)$row['precio'] : null,
-                'codigo_barra'   => $row['codigo_barra'],
+                'item_id' => $row['item_id'],
+                'item_aizu_id' => $row['item_aizu_id'] ?? null,
+                'padre_id' => $row['padre_id'],
+                'item_nombre' => $row['item_nombre'],
+                'categoria' => !empty($row['categoria']) ? json_decode($row['categoria'], true) : [],
+                'precio' => $row['precio'] !== null ? (float)$row['precio'] : null,
+                'codigo_barra' => $row['codigo_barra'],
                 'codigo_interno' => $row['codigo_interno'],
-                'stock_actual'   => $row['stock_actual'] !== null ? (int)$row['stock_actual'] : null,
-                'descripcion'    => $row['descripcion'],
-                'ficha_tecnica'  => $row['ficha_tecnica'],
-                'servicio'       => (int)$row['servicio'],
+                'stock_actual' => $row['stock_actual'] !== null ? (int)$row['stock_actual'] : null,
+                'descripcion' => $row['descripcion'],
+                'ficha_tecnica' => $row['ficha_tecnica'] ?? null,
+                'servicio' => (int)($row['servicio'] ?? 0),
                 'variants' => !empty($row['variants']) ? json_decode($row['variants'], true) : [],
                 'fiscal' => [
-                    'unidad' => $row['fiscal_unidad'],
-                    'clave'  => $row['fiscal_clave'],
-                    'iva'    => $row['fiscal_iva'],
-                    'ieps'   => $row['fiscal_ieps']
+                    'unidad' => $row['fiscal_unidad'] ?? null,
+                    'clave' => $row['fiscal_clave'] ?? null,
+                    'iva' => $row['fiscal_iva'] ?? null,
+                    'ieps' => $row['fiscal_ieps'] ?? null
                 ],
                 'dimensiones' => [
-                    'alto'  => $row['dim_alto'],
-                    'ancho' => $row['dim_ancho'],
-                    'largo' => $row['dim_largo'],
-                    'peso'  => $row['dim_peso']
+                    'alto' => $row['dim_alto'] ?? null,
+                    'ancho' => $row['dim_ancho'] ?? null,
+                    'largo' => $row['dim_largo'] ?? null,
+                    'peso' => $row['dim_peso'] ?? null
                 ],
-                'origen'        => $row['origen'],
-                'created_at'    => $row['created_at'],
-                'updated_at'    => $row['updated_at']
+                'origen' => $row['origen'],
+                'created_at' => $row['created_at'],
+                'updated_at' => $row['updated_at']
             ];
         }
-
-        return [
-            'action' => 'getProductsFromDb',
-            'timestamp' => date('c'),
-            'items' => $items
-        ];
+        $stmt->close();
+        return ['action' => 'getProductsFromDb', 'timestamp' => date('c'), 'items' => $items];
     }
 
     # <--- ORDERS --->
@@ -169,30 +159,35 @@ class Ecommerce
     {
         $providers = $this->filterProviders($platforms);
         $ordersByPlatform = [];
-
         $db = (new Database())->connect();
 
         foreach ($providers as $provider) {
             $rawList = $provider->fetchRawOrders();
             $normalizedList = [];
+            $values = [];
 
             foreach ($rawList as $raw) {
-                $mypos_id  = $session['mypos_id'];
-                $client_id = (int)$session['client_id'];
-                $order_id  = $raw['id'];
-                $origen    = $provider->getName();
+                $values[] = [
+                    $session['mypos_id'] ?? '',
+                    (int)($session['client_id'] ?? 0),
+                    $raw['id'] ?? '',
+                    $provider->getName(),
+                    json_encode($raw['cliente'] ?? [], JSON_UNESCAPED_UNICODE),
+                    json_encode($raw['vendedor'] ?? [], JSON_UNESCAPED_UNICODE),
+                    json_encode($raw['pago'] ?? [], JSON_UNESCAPED_UNICODE),
+                    json_encode($raw['partes'] ?? [], JSON_UNESCAPED_UNICODE),
+                    $raw['notas'] ?? null
+                ];
+                $normalizedList[] = $raw;
+            }
 
-                $clienteJson  = json_encode($raw['cliente'], JSON_UNESCAPED_UNICODE);
-                $vendedorJson = json_encode($raw['vendedor'], JSON_UNESCAPED_UNICODE);
-                $pagoJson     = json_encode($raw['pago'], JSON_UNESCAPED_UNICODE);
-                $partesJson   = json_encode($raw['partes'], JSON_UNESCAPED_UNICODE);
-                $notas        = $raw['notas'] ?? null;
-
+            if (!empty($values)) {
+                $placeholders = implode(',', array_fill(0, count($values), '(?,?,?,?,?,?,?,?,?)'));
                 $stmt = $db->prepare("
                     INSERT INTO orders (
                         mypos_id, client_id, order_id, origen,
                         cliente, vendedor, pago, partes, notas
-                    ) VALUES (?,?,?,?,?,?,?,?,?)
+                    ) VALUES $placeholders
                     ON DUPLICATE KEY UPDATE
                         cliente = VALUES(cliente),
                         vendedor = VALUES(vendedor),
@@ -201,44 +196,37 @@ class Ecommerce
                         notas = VALUES(notas),
                         updated_at = CURRENT_TIMESTAMP
                 ");
-
-                $stmt->bind_param(
-                    "sisssssss",
-                    $mypos_id,
-                    $client_id,
-                    $order_id,
-                    $origen,
-                    $clienteJson,
-                    $vendedorJson,
-                    $pagoJson,
-                    $partesJson,
-                    $notas
-                );
-
+                
+                $types = str_repeat('sisssssss', count($values));
+                
+                $flat = [];
+                foreach ($values as $row) {
+                    foreach ($row as $field) {
+                        $flat[] = $field;
+                    }
+                }
+                $stmt->bind_param($types, ...$flat);
                 $stmt->execute();
                 $stmt->close();
-
-                $normalizedList[] = $raw;
             }
 
             $ordersByPlatform[$provider->getName()] = $normalizedList;
         }
 
-        return [
-            'action' => 'getApiOrders',
-            'orders' => $ordersByPlatform
-        ];
+        return ['action' => 'getApiOrders', 'orders' => $ordersByPlatform];
     }
 
-    public function getOrdersFromDb(array $session = []): array
+    public function getOrdersFromDb(array $session = [], int $limit = 100, int $offset = 0): array
     {
         $db = (new Database())->connect();
         $items = [];
-
-        $sql = "SELECT order_id, origen, cliente, vendedor, pago, partes, notas, created_at, updated_at 
-                FROM orders WHERE client_id = ?";
+        
+        $clientId = (int)($session['client_id'] ?? 0);
+        $myposId = $session['mypos_id'] ?? '';
+        
+        $sql = "SELECT * FROM orders WHERE client_id = ? AND mypos_id = ? LIMIT ? OFFSET ?";
         $stmt = $db->prepare($sql);
-        $stmt->bind_param("i", $session['client_id']);
+        $stmt->bind_param("isii", $clientId, $myposId, $limit, $offset);
         $stmt->execute();
         $result = $stmt->get_result();
 
@@ -246,10 +234,10 @@ class Ecommerce
             $items[] = [
                 'order_id'   => $row['order_id'],
                 'origen'     => $row['origen'],
-                'cliente'    => json_decode($row['cliente'], true),
-                'vendedor'   => json_decode($row['vendedor'], true),
-                'pago'       => json_decode($row['pago'], true),
-                'partes'     => json_decode($row['partes'], true),
+                'cliente'    => json_decode($row['cliente'] ?? '{}', true),
+                'vendedor'   => json_decode($row['vendedor'] ?? '{}', true),
+                'pago'       => json_decode($row['pago'] ?? '{}', true),
+                'partes'     => json_decode($row['partes'] ?? '[]', true),
                 'notas'      => $row['notas'],
                 'created_at' => $row['created_at'],
                 'updated_at' => $row['updated_at']
@@ -258,10 +246,7 @@ class Ecommerce
 
         $stmt->close();
 
-        return [
-            'action' => 'getOrders',
-            'items' => $items
-        ];
+        return ['action' => 'getOrdersFromDb', 'items' => $items];
     }
 
     # <--- CUSTOMERS --->
@@ -270,26 +255,39 @@ class Ecommerce
     {
         $providers = $this->filterProviders($platforms);
         $customersByPlatform = [];
-
         $db = (new Database())->connect();
 
         foreach ($providers as $provider) {
             $rawList = $provider->fetchRawCustomers();
             $normalizedList = [];
+            $values = [];
 
             foreach ($rawList as $raw) {
-                $mypos_id   = $session['mypos_id'];
-                $client_id  = (int)$session['client_id'];
-                $customer_id= $raw['id'];
-                $origen     = $provider->getName();
+                $values[] = [
+                    $session['mypos_id'] ?? '',
+                    (int)($session['client_id'] ?? 0),
+                    $raw['id'] ?? '',
+                    $provider->getName(),
+                    $raw['telefono'] ?? '',
+                    $raw['movil'] ?? '',
+                    $raw['lada'] ?? '',
+                    $raw['notas'] ?? '',
+                    $raw['nombre'] ?? '',
+                    $raw['rfc'] ?? '',
+                    $raw['email'] ?? '',
+                    (int)($raw['prospecto'] ?? 0),
+                    json_encode($raw['direccion'] ?? [], JSON_UNESCAPED_UNICODE)
+                ];
+                $normalizedList[] = $raw;
+            }
 
-                $direccionJson = json_encode($raw['direccion'], JSON_UNESCAPED_UNICODE);
-
+            if (!empty($values)) {
+                $placeholders = implode(',', array_fill(0, count($values), '(?,?,?,?,?,?,?,?,?,?,?,?,?)'));
                 $stmt = $db->prepare("
                     INSERT INTO customers (
                         mypos_id, client_id, customer_id, origen,
                         telefono, movil, lada, notas, nombre, rfc, email, prospecto, direccion
-                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ) VALUES $placeholders
                     ON DUPLICATE KEY UPDATE
                         telefono = VALUES(telefono),
                         movil = VALUES(movil),
@@ -302,55 +300,49 @@ class Ecommerce
                         direccion = VALUES(direccion),
                         updated_at = CURRENT_TIMESTAMP
                 ");
-
-                $stmt->bind_param(
-                    "sisssssssssis",
-                    $mypos_id,
-                    $client_id,
-                    $customer_id,
-                    $origen,
-                    $raw['telefono'],
-                    $raw['movil'],
-                    $raw['lada'],
-                    $raw['notas'],
-                    $raw['nombre'],
-                    $raw['rfc'],
-                    $raw['email'],
-                    $raw['prospecto'],
-                    $direccionJson
-                );
-
+                
+                $types = str_repeat('sisssssssssis', count($values));
+                
+                $flat = [];
+                foreach ($values as $row) {
+                    foreach ($row as $field) {
+                        $flat[] = $field;
+                    }
+                }
+                $stmt->bind_param($types, ...$flat);
                 $stmt->execute();
                 $stmt->close();
-
-                $normalizedList[] = $raw;
             }
 
             $customersByPlatform[$provider->getName()] = $normalizedList;
         }
 
-        return [
-            'action' => 'getApiCustomers',
-            'customers' => $customersByPlatform
-        ];
+        return ['action' => 'getApiCustomers', 'customers' => $customersByPlatform];
     }
 
-    public function getCustomersFromDb(array $session = []): array
+    public function getCustomersFromDb(array $session = [], int $limit = 100, int $offset = 0): array
     {
         $db = (new Database())->connect();
         $items = [];
 
-        $sql = "SELECT customer_aizu_id, customer_id, origen, telefono, movil, lada, notas, nombre, rfc, email, prospecto, direccion, created_at, updated_at 
-                FROM customers WHERE client_id = ?";
+        $clientId = (int)($session['client_id'] ?? 0);
+        $myposId = $session['mypos_id'] ?? '';
+
+        $sql = "SELECT customer_aizu_id, customer_id, origen, telefono, movil, lada, notas, 
+                       nombre, rfc, email, prospecto, direccion, created_at, updated_at 
+                FROM customers 
+                WHERE client_id = ? AND mypos_id = ? 
+                LIMIT ? OFFSET ?";
+
         $stmt = $db->prepare($sql);
-        $stmt->bind_param("i", $session['client_id']);
+        $stmt->bind_param("isii", $clientId, $myposId, $limit, $offset);
         $stmt->execute();
         $result = $stmt->get_result();
 
         while ($row = $result->fetch_assoc()) {
             $items[] = [
                 'id'        => $row['customer_id'],
-                'aizu_id'   => $row['customer_aizu_id'],
+                'aizu_id'   => $row['customer_aizu_id'] ?? null,
                 'origen'    => $row['origen'],
                 'telefono'  => $row['telefono'],
                 'movil'     => $row['movil'],
@@ -360,7 +352,7 @@ class Ecommerce
                 'rfc'       => $row['rfc'],
                 'email'     => $row['email'],
                 'prospecto' => (int)$row['prospecto'],
-                'direccion' => json_decode($row['direccion'], true),
+                'direccion' => !empty($row['direccion']) ? json_decode($row['direccion'], true) : [],
                 'created_at'=> $row['created_at'],
                 'updated_at'=> $row['updated_at']
             ];
@@ -369,7 +361,8 @@ class Ecommerce
         $stmt->close();
 
         return [
-            'action' => 'getCustomers',
+            'action'    => 'getCustomersFromDb',
+            'timestamp' => date('c'),
             'customers' => $items
         ];
     }
