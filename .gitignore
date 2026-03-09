@@ -1,0 +1,8 @@
+# Crear o editar .gitignore
+echo ".env" >> .gitignore
+echo ".env.local" >> .gitignore
+echo ".env.*" >> .gitignore
+
+# Agregar .gitignore al commit
+git add .gitignore
+git commit --amend --no-edit

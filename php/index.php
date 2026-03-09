@@ -2,6 +2,9 @@
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_STRICT);
 ini_set('display_errors', 1);
 
+require_once "./config/EnvLoader.php";
+EnvLoader::load(dirname(__DIR__) . '/.env');
+
 require_once "./jwt.php";
 require_once "./Database.php";
 require_once "./Ecommerce.php";
