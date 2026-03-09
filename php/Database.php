@@ -2,42 +2,49 @@
 
 class Database
 {
-    private static ?mysqli $instance = null;
-    private static ?array $config = null;
+    # Propiedades para almacenar la configuración de la base de datos
+    private $host;
+    private $dbname;
+    private $user;
+    private $password;
+    private $charset;
 
-    private function __construct() {}
-
-    public static function getConnection(): mysqli
+    # Constructor para cargar la configuración de la base de datos
+    public function __construct()
     {
-        if (self::$instance === null) {
+        $config = require 'config/db.php';
+        $this->host = $config['host'];
+        $this->dbname = $config['dbname'];
+        $this->user = $config['user'];
+        $this->password = $config['password'];
+        $this->charset = $config['charset'];
+    }
 
-            if (self::$config === null) {
-                self::$config = require __DIR__ . '/config/db.php';
+    public function connect() # Método para establecer la conexión a la base de datos
+    {
+        try {
+            // Crear la conexión
+            $conn = new mysqli($this->host, $this->user, $this->password, $this->dbname);
+
+            // Verificar la conexión
+            if ($conn->connect_error) {
+                throw new Exception("Connection failed: " . $conn->connect_error);
             }
 
-            mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
-
-            try {
-                self::$instance = new mysqli(
-                    self::$config['host'],
-                    self::$config['user'],
-                    self::$config['pass'],
-                    self::$config['dbname']
-                );
-
-                self::$instance->set_charset(self::$config['charset']);
-
-            } catch (mysqli_sql_exception $e) {
-                http_response_code(500);
-                echo json_encode([
-                    'status' => 'error',
-                    'code' => 'DB500',
-                    'answer' => 'Error de conexión a base de datos'
-                ], JSON_UNESCAPED_UNICODE);
-                exit;
+            // Establecer el charset
+            if (!$conn->set_charset($this->charset)) {
+                throw new Exception("Error loading character set: " . $conn->error);
             }
+
+            return $conn;
+        } catch (Exception $e) {
+            http_response_code(500);
+            echo json_encode([
+                'status' => 'error',
+                'code' => 'DB500',
+                'answer' => 'Error de conexión a base de datos'
+            ], JSON_UNESCAPED_UNICODE);
+            exit;
         }
-
-        return self::$instance;
     }
 }

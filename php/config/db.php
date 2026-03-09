@@ -1,8 +1,8 @@
 <?php
 return [
     'host' => 'localhost',
-    'dbname' => 'simple_db',
+    'dbname' => 'ecom-db',
     'user' => 'root',
-    'pass' => '',
+    'password' => '',
     'charset' => 'utf8mb4'
 ];

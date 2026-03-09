@@ -1,17 +1,20 @@
 <?php
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_STRICT);
-ini_set('display_errors', 0);
+ini_set('display_errors', 1);
 
-require_once "./Router.php";
-require_once "./Ecommerce.php";
-require_once "./TiendaNube.php";
-require_once "./Amazon.php";
-require_once "./Shopify.php";
-require_once "./Database.php";
 require_once "./jwt.php";
+require_once "./Database.php";
+require_once "./Ecommerce.php";
+require_once "./Shopify.php";
+require_once "./TiendaNube.php";
+require_once "./Claroshop.php";
+require_once "./MercadoLibre.php";
+require_once "./Utils.php";
 
-function getSessionOrFail(): ?array {
-    $headers = getallheaders();
+# función para la sesión
+function getSessionOrFail()
+{
+    $headers = getallheaders(); # obtenemos las cabeceras de la petición
 
     if (!isset($headers['Authorization'])) {
         http_response_code(401);
@@ -19,10 +22,11 @@ function getSessionOrFail(): ?array {
         return null;
     }
 
-    $auth = str_replace('Bearer ', '', $headers['Authorization']);
-    $jwt = new JWT();
-    $payload = $jwt->decrypt($auth);
+    $auth = str_replace('Bearer ', '', $headers['Authorization']); # obtenemos el token de la cabecera
+    $jwt = new JWT(); # creamos una instancia de la clase JWT
+    $payload = $jwt->decrypt($auth); # desencriptamos el token
 
+    # validamos el payload del token
     if (
         !$payload ||
         !isset($payload['mypos_id']) ||
@@ -34,168 +38,108 @@ function getSessionOrFail(): ?array {
     }
 
     return [
-        'mypos_id'  => (string)$payload['mypos_id'],
-        'client_id' => (string)$payload['client_id'],
+        'mypos_id' => (string)$payload['mypos_id'], 
+        'client_id' => (string)$payload['client_id']
     ];
 }
 
-$router = new Router();
+#   <---    Router    --->>>
 
-# Sincronizar todas las plataformas manual
+$session = getSessionOrFail(); # valida el token
 
-$router->post('/sync', function () {
-    $session = getSessionOrFail();
-    if (!$session) return;
+# decodifca el playload JSON enviado por post
+$input = json_decode(file_get_contents('php://input'), true);
 
-    $tn = new TiendaNube($session);
-    $sh = new Shopify($session);
+if (!$input || !isset($input['action'])) {
+    http_response_code(404);
+    print json_encode(['status' => false, 'error' => 'Acción no especificada']);
+    exit;
+}
 
-    $tnResult = $tn->sync();
-    $shResult = $sh->sync();
+# inicializamos Ecommerce con las tiendas
+$ecommerce = new Ecommerce([
+    new Shopify(),
+    new TiendaNube(),
+    new MercadoLibre(),
+    new Claroshop()
+]);
 
-    print json_encode([
-        'status' => 'success',
-        'code' => '200',
-        'answer' => 'Sincronización de plataformas completada',
-        'data' => [
-            'tiendanube' => $tnResult,
-            'shopify' => $shResult
-        ]
-    ], JSON_UNESCAPED_UNICODE);
-});
+$action = $input['action'];
+$data = $input['data'] ?? [];
+$platforms = $input['platforms'] ?? [];
 
-# Agregar productos
-$router->post('/addItems', function () {
-    $session = getSessionOrFail();
-    if (!$session) return;
+# router dinamico
+switch ($action) {
+    # acciones de productos
+    case 'getApiProducts':
+        $result = $ecommerce->getApiProducts($platforms, $session);
+        break;
 
-    $input = json_decode(file_get_contents("php://input"), true);
+    case 'getProducts':
+        $result = $ecommerce->getProductsFromDb($session);
+        break;
 
-    if (empty($input['plataformas'])) {
-        print json_encode(['error' => 'Debe especificar plataformas']);
-        return;
-    }
+    case 'createProduct':
+        // $result = $ecommerce->createProduct($data);
+        break;
+    case 'updateProduct':
+        // $result = $ecommerce->updateProduct($data);
+        break;
+    case 'deleteProduct':
+        // $result = $ecommerce->deleteProduct($data);
+        break;
 
-    $results = [];
+    # acciones de pedidos
+    case 'getApiOrders':
+        $result = $ecommerce->getApiOrders($platforms, $session);
+        break;
+    case 'getOrders':
+        $result = $ecommerce->getOrdersFromDb($session);
+        break;
+    case 'createOrder':
+        // $result = $ecommerce->createOrder($data);
+        break;
+    case 'updateOrder':
+        // $result = $ecommerce->updateOrder($data);
+        break;
+    case 'deleteOrder':
+        // $result = $ecommerce->deleteOrder($data);
+        break;
 
-    foreach ($input['plataformas'] as $platform) {
+    # acciones de clientes
+    case 'getApiCustomers':
+        $result = $ecommerce->getApiCustomers($platforms, $session);
+        break;
+    case 'getCustomers':
+        $result = $ecommerce->getCustomersFromDb($session);
+        break;
+    case 'createCustomer':
+        // $result = $ecommerce->createCustomer($data);
+        break;
+    case 'updateCustomer':
+        // $result = $ecommerce->updateCustomer($data);
+        break;
+    case 'deleteCustomer':
+        // $result = $ecommerce->deleteCustomer($data);
+        break;
 
-        switch ($platform) {
-            case 'tiendanube':
-                $instance = new TiendaNube($session);
-                break;
+    # acciones de categorias
+    case 'getCategories':
+        // $result = $ecommerce->getCategories();
+        break;
+    case 'createCategory':
+        // $result = $ecommerce->createCategory($data);
+        break;
+    case 'updateCategory':
+        // $result = $ecommerce->updateCageory($data);
+        break;
+    case 'deleteCategory':
+        // $result = $ecommerce->deleteCategory($data);
+        break;
+    default:
+        http_response_code(404);
+        print json_encode(['status' => false, 'error' => 'Acción no encontrada']);
+        exit;
+}
 
-            case 'shopify':
-                $instance = new Shopify($session);
-                break;
-
-            default:
-                continue 2;
-        }
-
-        $results[$platform] = $instance->addItem($input);
-    }
-
-    print json_encode($results, JSON_UNESCAPED_UNICODE);
-});
-
-# Editar productos
-$router->put('/editItems', function () {
-    $session = getSessionOrFail();
-    if (!$session) return;
-
-    $input = json_decode(file_get_contents("php://input"), true);
-
-    if (empty($input['plataforma']) || empty($input['id_externo'])) {
-        print json_encode(['error' => 'plataforma e id_externo requeridos']);
-        return;
-    }
-
-    switch ($input['plataforma']) {
-        case 'tiendanube':
-            $instance = new TiendaNube($session);
-            break;
-
-        case 'shopify':
-            $instance = new Shopify($session);
-            break;
-
-        default:
-            print json_encode(['error' => 'Plataforma inválida']);
-            return;
-    }
-
-    $result = $instance->editItem($input['id_externo'], $input);
-
-    print json_encode($result, JSON_UNESCAPED_UNICODE);
-});
-
-# Agregar clientes
-$router->post('/addCustomer', function () {
-
-    $session = getSessionOrFail();
-    if (!$session) return;
-
-    $input = json_decode(file_get_contents("php://input"), true);
-
-    $results = [];
-
-    foreach ($input['plataformas'] ?? [] as $platform) {
-
-        switch ($platform) {
-            case 'tiendanube':
-                $instance = new TiendaNube($session);
-                break;
-
-            case 'shopify':
-                $instance = new Shopify($session);
-                break;
-
-            default:
-                continue 2;
-        }
-
-        $results[$platform] = $instance->addCustomer($input);
-    }
-
-    print json_encode($results, JSON_UNESCAPED_UNICODE);
-});
-
-# Editar clientes
-$router->put('/editCustomer', function () {
-
-    $session = getSessionOrFail();
-    if (!$session) return;
-
-    $input = json_decode(file_get_contents("php://input"), true);
-
-    if (!is_array($input)) {
-        print json_encode(['error' => 'JSON inválido']);
-        return;
-    }
-
-    if (empty($input['plataforma']) || empty($input['id_externo'])) {
-        print json_encode(['error' => 'plataforma e id_externo requeridos']);
-        return;
-    }
-
-    switch ($input['plataforma']) {
-        case 'tiendanube':
-            $instance = new TiendaNube($session);
-            break;
-
-        case 'shopify':
-            $instance = new Shopify($session);
-            break;
-
-        default:
-            print json_encode(['error' => 'Plataforma inválida']);
-            return;
-    }
-
-    $result = $instance->editCustomer($input['id_externo'], $input);
-
-    print json_encode($result, JSON_UNESCAPED_UNICODE);
-});
-
-$router->route();
+print json_encode($result);

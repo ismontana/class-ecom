@@ -1,12 +1,12 @@
 <?php
 
-class MercadoLibre extends Ecommerce {
+class Claroshop extends Ecommerce {
     public function __construct()
     {
         
     }
     public function getName(): string
     {
-        return 'MercadoLibre';
+        return 'Claroshop';
     }
 }

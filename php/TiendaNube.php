@@ -1,588 +1,322 @@
 <?php
 
-class TiendaNube extends Ecommerce
+class TiendaNube
 {
-    protected string $storeId;
-    protected string $apiToken;
+    private string $user_Id;
+    private string $api_token;
+    private string $baseUrl;
+    private array $headers;
 
-    protected string $codeStr = 'TN-';
-
-    # Obtiene las credenciales desde la BD usando el mypos_id del JWT 
-    public function __construct(array $session)
+    public function __construct()
     {
-        try {
-            if (empty($session['mypos_id']) || empty($session['client_id'])) {
-                throw new RuntimeException('Sesión inválida');
-            }
+        $this->user_Id  = getenv('TIENDANUBE_USER_ID');
+        $this->api_token = getenv('TIENDANUBE_API_TOKEN');
 
-            # Obtengo los datos de la sesión
-            $mypos_id  = (string) $session['mypos_id'];
-            $client_id = (string) $session['client_id'];
+        $this->baseUrl = "https://api.tiendanube.com/v1/{$this->user_Id}";
 
-            # Conexión a la base de datos
-            $db = Database::getConnection();
-
-            # Obtengo la configuración de la plataforma almacenada en la base de datos
-            # Busca la fila donde platform = 'tiendanube' para mi mypos_id
-            $stmt = $db->prepare("
-                SELECT config
-                FROM platforms_config
-                WHERE mypos_id = ?
-                AND platform = 'tiendanube'
-                AND status = 'connected'
-                LIMIT 1
-            ");
-
-            # Parametros de la consulta
-            $stmt->bind_param("s", $mypos_id);
-            $stmt->execute();
-
-            $result = $stmt->get_result();
-            $platform = $result->fetch_assoc();
-
-            $stmt->close();
-
-            if (!$platform) {
-                throw new RuntimeException('Plataforma no conectada');
-            }
-
-            $config = json_decode($platform['config'] ?? '', true);
-
-            if (
-                empty($config['api_token']) ||
-                empty($config['user_Id'])
-            ) {
-                throw new RuntimeException('Configuración incompleta de TiendaNube');
-            }
-
-            $this->storeId  = (string) $config['user_Id'];
-            $this->apiToken = (string) $config['api_token'];
-
-            # Inicializa Ecommerce con la URL base de la API REST de TiendaNube y los datos de la sesión
-            parent::__construct(
-                "https://api.tiendanube.com/v1/{$this->storeId}",
-                $mypos_id,
-                $client_id
-            );
-
-            # Headers obligatorios para TiendaNube
-            $this->headers = [
-                'Authentication: bearer ' . $this->apiToken,
-                'User-Agent: MyPOS Integration',
-                'Content-Type: application/json'
-            ];
-        } catch (Throwable $e) {
-            print 'TiendaNube::__construct -> ' . $e->getMessage();
-        }
+        $this->headers = [
+            'Authentication: bearer ' . $this->api_token,
+            'User-Agent: MyPOS Integration',
+            'Content-Type: application/json'
+        ];
     }
 
-    /* ================= NORMALIZADORES ================= */
-
-    # Normaliza productos de TiendaNube al formato de Ecommerce
-    private function normalizeProducts(array $items): array
+    public function getName(): string
     {
-        $json = [];
+        return 'TiendaNube';
+    }
 
-        foreach ($items as $p) {
-            # Nombre y descripción del producto padre
+    # <--- REQUEST --->
+
+    private function request(string $method, string $endpoint): array
+    {
+        $ch = curl_init($this->baseUrl . $endpoint);
+
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, $this->headers);
+
+        if ($method !== 'GET') {
+            curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $method);
+        }
+
+        $response = curl_exec($ch);
+
+        if ($response === false) {
+            return [];
+        }
+
+        curl_close($ch);
+
+        return json_decode($response, true) ?? [];
+    }
+
+    # <--- PRODUCTS --->
+
+    public function fetchRawProducts(array $params = []): array
+    {
+        $allProducts = [];
+        $page = 1;
+
+        do {
+
+            $response = $this->request(
+                'GET',
+                "/products?page={$page}&per_page=200"
+            );
+
+            if (empty($response)) {
+                break;
+            }
+
+            $allProducts = array_merge($allProducts, $response);
+
+            $page++;
+
+        } while (count($response) === 200);
+
+        $products = $allProducts;
+
+        $raw = [];
+
+        foreach ($products as $p) {
+
             $productName = is_array($p['name'] ?? null)
                 ? ($p['name']['es'] ?? $p['name']['en'] ?? null)
                 : ($p['name'] ?? null);
 
-            $productDescRaw = is_array($p['description'] ?? null)
+            $description = is_array($p['description'] ?? null)
                 ? ($p['description']['es'] ?? $p['description']['en'] ?? null)
                 : ($p['description'] ?? null);
 
-            $productDesc = null;
+            $categoria = [];
 
-            if (!empty($productDescRaw)) {
-
-                // Convertir entidades HTML (&iquest; → ¿)
-                $decoded = html_entity_decode($productDescRaw, ENT_QUOTES | ENT_HTML5, 'UTF-8');
-
-                // Reemplazar </p> por doble salto de línea
-                $decoded = str_replace('</p>', "\n\n", $decoded);
-
-                // Quitar todas las etiquetas HTML restantes
-                $clean = strip_tags($decoded);
-
-                // Limpiar espacios extra
-                $clean = preg_replace('/[ \t]+/', ' ', $clean);     // espacios múltiples
-                $clean = preg_replace('/\n\s+/', " ", $clean);     // espacios después de salto
-                $clean = trim($clean);
-
-                $productDesc = $clean;
-            }
-
-            $productCategoriesRaw = $p['categories'] ?? [];
-            $productCategories = [];
-
-            if (!empty($productCategoriesRaw) && is_array($productCategoriesRaw)) {
-                foreach ($productCategoriesRaw as $cat) {
-                    if (is_array($cat)) {
-                        $productCategories[] = [
-                            'id'   => $cat['id'] ?? null,
-                            'name' => $cat['name']['es'] ?? $cat['name']['en'] ?? null
-                        ];
-                    }
-                }
-            }
-            $productPublished = !empty($p['published']);
-            $productFreeShipping = !empty($p['free_shipping']);
-
-            # Recolectar imágenes del producto padre
-            $productImages = [];
-            foreach ($p['images'] ?? [] as $img) {
-                if (!empty($img['src'])) {
-                    $productImages[] = [
-                        'url' => $img['src'],
-                        'alt' => $img['alt'] ?? null
-                    ];
+            if (!empty($p['categories'])) {
+                foreach ($p['categories'] as $cat) {
+                    $categoria[] = $cat['name']['es'] ?? $cat['name']['en'] ?? null;
                 }
             }
 
-            # Variantes del producto padre
-            $variantsList = $p['variants'] ?? [];
+            $isService = !($p['requires_shipping'] ?? true);
+            $variants = $p['variants'] ?? [];
 
-            # Si no hay variantes, mantenemos una entrada con la info del padre
-            if (empty($variantsList)) {
-                $json[] = [
-                    'id' => $p['id'] ?? null,
-                    'name' => ['es' => $productName],
-                    'description' => ['es' => $productDesc],
-                    'variants' => [[
-                        'price' => (float) ($p['price'] ?? 0),
-                        'promotional_price' => $p['promotional_price'] ?? null,
-                        'stock' => (int) ($p['stock'] ?? 0),
-                        'sku' => $p['sku'] ?? null,
-                        'barcode' => $p['barcode'] ?? null,
-                        'weight' => $p['weight'] ?? null,
-                        'width' => $p['width'] ?? null,
-                        'height' => $p['height'] ?? null,
-                        'depth' => $p['depth'] ?? null,
-                        'requires_shipping' => (bool) ($p['requires_shipping'] ?? true)
-                    ]],
-                    'images' => $productImages,
-                    'published' => $productPublished,
-                    'free_shipping' => $productFreeShipping,
-                    'categories' => $productCategories
-                ];
-                continue;
-            }
+            foreach ($variants as $v) {
 
-            # Para cada variante, crear un "producto" independiente con el nombre que incluye las opciones
-            foreach ($variantsList as $v) {
-                $variantId = $v['id'] ?? ($p['id'] ?? null);
+                $variantValues = [];
 
-                $price = isset($v['price']) ? (float) $v['price'] : (float) ($p['price'] ?? 0);
-                $promotional = $v['promotional_price'] ?? $p['promotional_price'] ?? null;
-                $stock = isset($v['stock']) ? (int) $v['stock'] : (int) ($p['stock'] ?? 0);
-                $sku = $v['sku'] ?? null;
-                $barcode = $v['barcode'] ?? null;
-                $weight = $v['weight'] ?? null;
-                $requiresShipping = $v['requires_shipping'] ?? $p['requires_shipping'] ?? true;
-
-                # Construir partes de opciones de la variante
-                $optionParts = [];
-
-                # TiendaNube usa "values"
-                if (!empty($v['values']) && is_array($v['values'])) {
+                if (!empty($v['values'])) {
                     foreach ($v['values'] as $val) {
-                        if (is_array($val)) {
-                            # Priorizar español, luego inglés
-                            $value = $val['es'] ?? $val['en'] ?? null;
-                            if (!empty($value)) {
-                                $optionParts[] = trim($value);
-                            }
-                        }
+                        $variantValues[] = $val['es'] ?? $val['en'] ?? null;
                     }
                 }
 
-                # Compatibilidad genérica (por si otra plataforma usa options)
-                if (empty($optionParts) && !empty($v['options']) && is_array($v['options'])) {
-                    foreach ($v['options'] as $optVal) {
-                        if ($optVal !== null && $optVal !== '') {
-                            $optionParts[] = trim($optVal);
-                        }
-                    }
-                }
-
-                # Fallback por si no hay opciones
-                if (empty($optionParts)) {
-                    if (!empty($v['option_values']) && is_array($v['option_values'])) {
-                        foreach ($v['option_values'] as $ov) {
-                            if (is_array($ov)) {
-                                $optionParts[] = trim($ov['name'] ?? $ov['value'] ?? '');
-                            } else {
-                                $optionParts[] = trim($ov);
-                            }
-                        }
-                    } elseif (!empty($v['name'])) {
-                        $optionParts[] = trim($v['name']);
-                    }
-                }
-
-                $variantSuffix = !empty($optionParts) ? ' ' . implode(' ', $optionParts) : '';
-                $variantName = trim(($productName ?? '') . $variantSuffix);
-
-                # Imágenes: preferir imágenes de la variante si existen, sino usar las del padre
-                $images = $productImages;
-                if (!empty($v['images']) && is_array($v['images'])) {
-                    $images = [];
-                    foreach ($v['images'] as $vi) {
-                        if (!empty($vi['src'])) {
-                            $images[] = ['url' => $vi['src'], 'alt' => $vi['alt'] ?? null];
-                        }
-                    }
-                }
-
-                # Construir la entrada final
-                $json[] = [
-                    'id' => $variantId,
-                    'name' => ['es' => $variantName],
-                    'description' => ['es' => $productDesc],
-                    'variants' => [[
-                        'id' => $variantId,
-                        'price' => $price,
-                        'promotional_price' => $promotional,
-                        'stock' => $stock,
-                        'sku' => $sku,
-                        'barcode' => $barcode,
-                        'weight' => $weight,
-                        'width' => $v['width'] ?? null,
-                        'height' => $v['height'] ?? null,
-                        'depth' => $v['depth'] ?? null,
-                        'requires_shipping' => (bool) $requiresShipping,
-                        'options' => $optionParts
-                    ]],
-                    'images' => $images,
-                    'published' => $productPublished,
-                    'free_shipping' => $productFreeShipping,
-                    'categories' => $productCategories
+                $raw[] = [
+                    'item_id'        => $v['id'],
+                    'padre_id'       => count($variants) > 1 ? $p['id'] : null,
+                    'item_nombre'    => $productName,
+                    'variants'       => $variantValues,
+                    'categoría'      => $categoria,
+                    'descripcion'    => $description,
+                    'stock_actual'   => $v['stock'] ?? null,
+                    'servicio'       => $isService ? 1 : 0,
+                    'precio'         => isset($v['price']) ? (float)$v['price'] : null,
+                    'codigo_barra'   => $v['barcode'] ?? null,
+                    'codigo_interno' => $v['sku'] ?? null
                 ];
             }
         }
 
-        return $json;
+        return $raw;
     }
 
-    # Normaliza ordenes de TiendaNube al formato de Ecommerce
-    private function normalizeOrders(array $items): array
+    # <--- ORDERS --->
+
+    public function fetchRawOrders(array $params = []): array
     {
-        $json = [];
+        $allOrders = [];
+        $page = 1;
 
-        foreach ($items as $o) {
+        do {
 
-            /* ================= Cliente ================= */
-            # Normalizo los datos del cliente
-            $customer = [
-                'id'    => $o['customer']['id'] ?? null,
-                'name'  => $o['customer']['name'] ?? null,
-                'email' => $o['customer']['email'] ?? null,
-                'phone' => !empty($o['customer']['phone'])
-                    ? '+' . ltrim($o['customer']['phone'], '+')
-                    : null,
-                'note'  => $o['customer']['note'] ?? null,
+            $response = $this->request(
+                'GET',
+                "/orders?page={$page}&per_page=200"
+            );
+
+            if (empty($response)) {
+                break;
+            }
+
+            $allOrders = array_merge($allOrders, $response);
+
+            $page++;
+        } while (count($response) === 200);
+
+        $orders = $allOrders;
+
+        $raw = [];
+
+        foreach ($orders as $o) {
+
+            $phoneData = Utils::extractPhoneData($o['customer']['phone'] ?? null);
+            $cliente = [
+                'id'        => $o['customer']['id'] ?? null,
+                'origen'    => 'TiendaNube',
+                'telefono'  => $phoneData['numero'],
+                'movil'     => $o['customer']['phone'] ?? null,
+                'lada'      => $phoneData['lada'],
+                'notas'     => $o['customer']['note'] ?? null,
+                'nombre'    => $o['customer']['name'] ?? null,
+                'rfc'       => null,
+                'email'     => $o['customer']['email'] ?? null,
+                'prospecto' => 0,
+                'direccion' => [
+                    'calle'     => $o['shipping_address']['address'] ?? null,
+                    'no_ext'    => null,
+                    'no_int'    => $o['shipping_address']['floor'] ?? null,
+                    'colonia'   => null,
+                    'cp'        => $o['shipping_address']['zipcode'] ?? null,
+                    'municipio' => $o['shipping_address']['city'] ?? null,
+                    'estado'    => $o['shipping_address']['province'] ?? null,
+                    'ciudad'    => $o['shipping_address']['city'] ?? null,
+                    'pais'      => $o['shipping_address']['country'] ?? null,
+                    'referencias' => null,
+                    'gps' => [
+                        'latitud' => null,
+                        'longitud' => null
+                    ]
+                ]
             ];
 
-            /* ================= SHIPPING ADDRESS (NORMALIZADO) ================== */
-
-            $ship = $o['shipping_address'] # Dirección de envío
-                ?? $o['customer']['default_address']
-                ?? [];
-
-            # Normalizo la dirección de envío
-            $shippingAddress = [
-                'address1'  => $ship['address'] ?? null,
-                'address2'  => $ship['floor'] ?? null,
-                'city'      => $ship['city'] ?? null,
-                'province'  => $ship['province'] ?? null,
-                'country'   => $ship['country'] ?? null,
-                'zip'       => $ship['zipcode'] ?? null,
-                'latitude'  => null,
-                'longitude' => null,
+            $vendedor = [
+                'aizu_id' => null,
+                'user'    => 'TiendaNube',
+                'nombre'  => 'TiendaNube'
             ];
 
-            /* ================= PRODUCTOS ================= */
+            $pago = [
+                'cuenta_receptora' => [
+                    'id' => null,
+                    'clabe' => null,
+                    'beneficiario' => null,
+                    'comision' => [
+                        'aizu_id' => null,
+                        'nombre' => null,
+                        'porcentaje' => null,
+                        'importe' => null
+                    ]
+                ],
+                'cuenta_emisora' => null,
+                'forma_pago' => null,
+                'metodo_pago' => $o['payment_status'] ?? null
+            ];
 
-            $products = [];
+            $partes = [];
 
-            # Recolectar productos de la orden
             foreach ($o['products'] ?? [] as $p) {
 
-                # Normalizo los productos
-                $products[] = [
-                    'id' => $p['product_id'] ?? null,
-                    'name' => $p['name'] ?? null,
-                    'quantity' => (int) ($p['quantity'] ?? 0),
-                    'unit_price_original' => (float) ($p['price'] ?? 0),
-                    'unit_price_discounted' => null,
-                    'sku' => $p['sku'] ?? null,
-                    'barcode' => $p['barcode'] ?? null,
-                    'inventory_quantity' => null,
-                    'weight' => null,
-                    'product_type' => null,
-                    'description' => null,
+                $partes[] = [
+                    'item_id'        => $p['product_id'],
+                    'item_aizu_id'   => null,
+                    'item_nombre'    => $p['name'],
+                    'categoría'      => [],
+                    'cant'           => $p['quantity'],
+                    'precio'         => (float)$p['price'],
+                    'codigo_barra'   => $p['barcode'] ?? null,
+                    'codigo_interno' => $p['sku'] ?? null,
+                    'stock_actual'   => null,
+                    'descripcion'    => null,
+                    'ficha_tecnica'  => null,
+                    'servicio'       => 0,
+                    'fiscal' => [
+                        'unidad' => null,
+                        'clave' => null,
+                        'iva' => null,
+                        'ieps' => null
+                    ],
+                    'dimensiones' => [
+                        'alto' => null,
+                        'ancho' => null,
+                        'largo' => null,
+                        'peso' => null
+                    ]
                 ];
             }
 
-            /* ================= ORDER FINAL ================= */
-
-            # Normalizo la orden
-            $json[] = [
-                'id' => $o['id'] ?? null,
-                'number' => $o['number'] ?? null,
-                'status' => $o['status'] ?? null,
-                'payment_status' => $o['payment_status'] ?? null,
-                'shipping_status' => $o['shipping_status'] ?? null,
-                'total' => (float) ($o['total'] ?? 0),
-                'subtotal' => $o['subtotal'] ?? null,
-                'discount' => $o['discount'] ?? null,
-                'shipping_cost_customer' => $o['shipping_cost_customer'] ?? null,
-                'currency' => $o['currency'] ?? null,
-                'customer' => $customer,
-                'shipping_address' => $shippingAddress,
-                'products' => $products,
-                'note' => $o['note'] ?? null,
-                'order_origin' => 'tiendanube'
+            $raw[] = [
+                'id'      => $o['id'],
+                'name'    => $o['number'] ?? null,
+                'createdAt' => $o['created_at'] ?? null,
+                'cliente' => $cliente,
+                'vendedor' => $vendedor,
+                'pago'    => $pago,
+                'partes'  => $partes,
+                'notas'   => $o['note'] ?? null
             ];
         }
 
-        return $json;
+        return $raw;
     }
 
-    # Normalizo clientes de TiendaNube al formato de Ecommerce
-    private function normalizeCustomers(array $items): array
+    # <--- CUSTOMERS --->
+
+    public function fetchRawCustomers(array $params = []): array
     {
-        $json = [];
+        $allCustomers = [];
+        $page = 1;
 
-        # Normalizo los clientes
-        foreach ($items as $c) {
+        do {
 
-            $addr = $c['defaultAddress'] # Dirección
-                ?? $c['default_address']
-                ?? [];
+            $response = $this->request(
+                'GET',
+                "/customers?page={$page}&per_page=200"
+            );
 
-            # Normalizo los datos del cliente
-            $json[] = [
-                'id'    => $c['id'] ?? null,
-                'name'  => $c['name'] ?? null,
-                'email' => $c['email'] ?? null,
-                'phone' => !empty($c['phone']) ? '+' . ltrim($c['phone'], '+') : null, # Con código de país
-                'note'  => $c['note'] ?? null,
+            if (empty($response)) {
+                break;
+            }
 
-                # Dirección
-                'address' => [
-                    'address1'  => $addr['address'] ?? null,
-                    'address2'  => null,
-                    'number'    => $addr['number'] ?? null,
-                    'floor'     => $addr['floor'] ?? null,
-                    'locality'  => $addr['locality'] ?? null,
-                    'city'      => $addr['city'] ?? null,
-                    'province'  => $addr['province'] ?? null,
-                    'country'   => $addr['country'] ?? null,
-                    'zip'       => $addr['zipcode'] ?? null,
-                    'latitude'  => null,
-                    'longitude' => null,
+            $allCustomers = array_merge($allCustomers, $response);
+
+            $page++;
+        } while (count($response) === 200);
+
+        $customers = $allCustomers;
+
+        $raw = [];
+
+        foreach ($customers as $c) {
+
+            $phoneData = Utils::extractPhoneData($c['phone'] ?? null);
+            $raw[] = [
+                'id'        => $c['id'],
+                'origen'    => 'TiendaNube',
+                'telefono'  => $phoneData['numero'],
+                'movil'     => $c['phone'] ?? null,
+                'lada'      => $phoneData['lada'],
+                'notas'     => $c['note'] ?? null,
+                'nombre'    => $c['name'] ?? null,
+                'rfc'       => null,
+                'email'     => $c['email'] ?? null,
+                'prospecto' => 0,
+                'direccion' => [
+                    'calle' => $c['default_address']['address'] ?? null,
+                    'no_ext' => null,
+                    'no_int' => $c['default_address']['floor'] ?? null,
+                    'colonia' => null,
+                    'cp'    => $c['default_address']['zipcode'] ?? null,
+                    'municipio' => $c['default_address']['city'] ?? null,
+                    'estado' => $c['default_address']['province'] ?? null,
+                    'ciudad' => $c['default_address']['city'] ?? null,
+                    'pais'  => $c['default_address']['country'] ?? null,
+                    'referencias' => null,
+                    'gps' => [
+                        'latitud' => null,
+                        'longitud' => null
+                    ]
                 ]
             ];
         }
 
-        return $json;
-    }
-
-    /* ================= PRODUCTOS ================= */
-
-    # Obtiene productos de TiendaNube y los normaliza
-    protected function getProducts(): array
-    {
-        try {
-            $response = $this->get('/products');
-
-            if ($response['status'] === 'error') {
-                return $response;
-            }
-
-            # Normalizo los productos
-            return [
-                'status' => 'ok',
-                'code'   => $this->codeStr . '200',
-                'answer' => 'Productos obtenidos',
-                'data'   => $this->normalizeProducts($response['data'] ?? [])
-            ];
-        } catch (Throwable $e) {
-            error_log('TiendaNube::getProducts -> ' . $e->getMessage());
-
-            return [
-                'status' => 'error',
-                'code'   => $this->codeStr . '500',
-                'answer' => 'Error interno al consultar productos',
-                'data'   => []
-            ];
-        }
-    }
-
-    # Crea un producto en TiendaNube y los normaliza
-    protected function createItem(array $data): array
-    {
-        $payload = [
-            "name" => [
-                "es" => $data['item_nombre']
-            ],
-            "description" => [
-                "es" => $data['descripcion']
-            ],
-            "published" => true,
-            "free_shipping" => false,
-
-            # Para simplificar, concatenamos las categorías en un string separado por comas para el campo "tags" de TiendaNube
-            "categories" => $data['categoría'] ?? [],
-
-            "variants" => [[
-                "price" => (float)$data['precio'],
-                "stock" => (int)$data['stock_actual'],
-                "sku" => $data['codigo_interno'] ?? null,
-                "barcode" => $data['codigo_barra'] ?? null,
-                "weight" => (float)($data['dimensiones']['peso'] ?? 0),
-                "width"  => (float)($data['dimensiones']['ancho'] ?? 0),
-                "height" => (float)($data['dimensiones']['alto'] ?? 0),
-                "depth"  => (float)($data['dimensiones']['largo'] ?? 0),
-                "requires_shipping" => $data['servicio'] == 1 ? false : true
-            ]]
-        ];
-
-        return $this->request('POST', '/products', $payload); # Enviar al API
-    }
-
-    # Actualiza un producto en TiendaNube y los normaliza
-    protected function updateItem(string $externalId, array $data): array
-    {
-        $payload = [
-            "name" => [
-                "es" => $data['item_nombre']
-            ],
-            "description" => [
-                "es" => $data['descripcion']
-            ],
-            "categories" => $data['categoría'] ?? []
-        ];
-
-        return $this->request('PUT', "/products/{$externalId}", $payload); # Enviar al API
-    }
-
-    /* ================= ORDENES ================= */
-
-    protected function getOrders(): array
-    {
-        try {
-            $response = $this->get('/orders');
-
-            if ($response['status'] === 'error') {
-                return $response;
-            }
-
-            # Normalizo las ordenes
-            return [
-                'status' => 'ok',
-                'code'   => $this->codeStr . '200',
-                'answer' => 'Órdenes obtenidas',
-                'data'   => $this->normalizeOrders($response['data'] ?? [])
-            ];
-        } catch (Throwable $e) {
-            error_log('TiendaNube::getOrders -> ' . $e->getMessage());
-
-            return [
-                'status' => 'error',
-                'code'   => $this->codeStr . '500',
-                'answer' => 'Error interno al consultar órdenes',
-                'data'   => []
-            ];
-        }
-    }
-
-    /* ================= CLIENTES ================= */
-
-    # Obtiene los clientes de TiendaNube y los normaliza
-    protected function getCustomers(): array
-    {
-        try {
-
-            # Obtener los clientes de TiendaNube
-            $response = $this->get('/customers');
-
-            if ($response['status'] === 'error') {
-                return $response;
-            }
-
-            # Normalizo los clientes
-            return [
-                'status' => 'ok',
-                'code'   => $this->codeStr . '200',
-                'answer' => 'Clientes obtenidos',
-                'data'   => $this->normalizeCustomers($response['data'] ?? [])
-            ];
-        } catch (Throwable $e) {
-
-            error_log('TiendaNube::getCustomers -> ' . $e->getMessage());
-
-            return [
-                'status' => 'error',
-                'code'   => $this->codeStr . '500',
-                'answer' => 'Error interno al consultar clientes',
-                'data'   => []
-            ];
-        }
-    }
-
-    # Crea un cliente en TiendaNube y los normaliza
-    protected function createCustomer(array $data): array
-    {
-        $direccion = $data['direccion'] ?? []; # Normalizar dirección
-
-        # Normalizar los datos del cliente para el payload de TiendaNube
-        $payload = [
-            "name"  => $data['nombre'] ?? null,
-            "email" => $data['email'] ?? null,
-            "phone" => $data['movil'] ?? $data['telefono'] ?? null,
-            "note"  => $data['notas'] ?? null,
-            "addresses" => [[
-                "address"  => $direccion['calle'] ?? null,
-                "number"   => $direccion['no_ext'] ?? null,
-                "floor"    => $direccion['no_int'] ?? null,
-                "locality" => $direccion['colonia'] ?? null,
-                "city"     => $direccion['ciudad'] ?? null,
-                "province" => $direccion['estado'] ?? null,
-                "country"  => $direccion['pais'] ?? null,
-                "zipcode"  => $direccion['cp'] ?? null,
-                "phone"    => $data['movil'] ?? null,
-                "name"     => $data['nombre'] ?? null
-            ]]
-        ];
-
-        return $this->request('POST', '/customers', $payload); # Enviar al API
-    }
-
-    # Actualiza un cliente en TiendaNube y los normaliza
-    protected function updateCustomer(string $externalId, array $data): array
-    {
-        # Normalizar dirección
-        $direccion = $data['direccion'] ?? [];
-
-        $payload = [
-            "name"  => $data['nombre'] ?? null,
-            "email" => $data['email'] ?? null,
-            "phone" => $data['movil'] ?? $data['telefono'] ?? null,
-            "note"  => $data['notas'] ?? null,
-            "addresses" => [[
-                "address"  => trim(($direccion['calle'] ?? '') . ' ' . ($direccion['no_ext'] ?? '')),
-                "city"     => $direccion['ciudad'] ?? null,
-                "province" => $direccion['estado'] ?? null,
-                "country"  => $direccion['pais'] ?? null,
-                "zipcode"  => $direccion['cp'] ?? null,
-                "phone"    => $data['movil'] ?? null
-            ]]
-        ];
-
-        return $this->request('PUT', "/customers/{$externalId}", $payload); # Enviar al API
+        return $raw;
     }
 }
