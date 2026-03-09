@@ -54,76 +54,91 @@ class TiendaNube
 
     public function fetchRawProducts(array $params = []): array
     {
-        $allProducts = [];
         $page = 1;
+        $raw = [];
 
         do {
 
-            $response = $this->request(
+            $products = $this->request(
                 'GET',
                 "/products?page={$page}&per_page=200"
             );
 
-            if (empty($response)) {
+            if (empty($products)) {
                 break;
             }
 
-            $allProducts = array_merge($allProducts, $response);
+            foreach ($products as $p) {
 
-            $page++;
+                $productName = is_array($p['name'] ?? null)
+                    ? ($p['name']['es'] ?? $p['name']['en'] ?? null)
+                    : ($p['name'] ?? null);
 
-        } while (count($response) === 200);
+                $description = is_array($p['description'] ?? null)
+                    ? ($p['description']['es'] ?? $p['description']['en'] ?? null)
+                    : ($p['description'] ?? null);
 
-        $products = $allProducts;
+                $categoria = [];
 
-        $raw = [];
-
-        foreach ($products as $p) {
-
-            $productName = is_array($p['name'] ?? null)
-                ? ($p['name']['es'] ?? $p['name']['en'] ?? null)
-                : ($p['name'] ?? null);
-
-            $description = is_array($p['description'] ?? null)
-                ? ($p['description']['es'] ?? $p['description']['en'] ?? null)
-                : ($p['description'] ?? null);
-
-            $categoria = [];
-
-            if (!empty($p['categories'])) {
-                foreach ($p['categories'] as $cat) {
-                    $categoria[] = $cat['name']['es'] ?? $cat['name']['en'] ?? null;
-                }
-            }
-
-            $isService = !($p['requires_shipping'] ?? true);
-            $variants = $p['variants'] ?? [];
-
-            foreach ($variants as $v) {
-
-                $variantValues = [];
-
-                if (!empty($v['values'])) {
-                    foreach ($v['values'] as $val) {
-                        $variantValues[] = $val['es'] ?? $val['en'] ?? null;
+                if (!empty($p['categories'])) {
+                    foreach ($p['categories'] as $cat) {
+                        $categoria[] = $cat['name']['es'] ?? $cat['name']['en'] ?? null;
                     }
                 }
 
-                $raw[] = [
-                    'item_id'        => $v['id'],
-                    'padre_id'       => count($variants) > 1 ? $p['id'] : null,
-                    'item_nombre'    => $productName,
-                    'variants'       => $variantValues,
-                    'categoría'      => $categoria,
-                    'descripcion'    => $description,
-                    'stock_actual'   => $v['stock'] ?? null,
-                    'servicio'       => $isService ? 1 : 0,
-                    'precio'         => isset($v['price']) ? (float)$v['price'] : null,
-                    'codigo_barra'   => $v['barcode'] ?? null,
-                    'codigo_interno' => $v['sku'] ?? null
-                ];
+                $isService = !($p['requires_shipping'] ?? true);
+
+                $variants = $p['variants'] ?? [];
+
+                if (empty($variants)) {
+                    $variants = [[
+                        'id' => $p['id'],
+                        'values' => [],
+                        'price' => $p['price'] ?? null,
+                        'stock' => $p['stock'] ?? null,
+                        'sku' => null,
+                        'barcode' => null
+                    ]];
+                }
+
+                foreach ($variants as $v) {
+
+                    $variantValues = [];
+
+                    if (!empty($v['values'])) {
+
+                        foreach ($v['values'] as $i => $val) {
+
+                            $variantValues[] = [
+                                'name' => $p['attributes'][$i]['es']
+                                    ?? $p['attributes'][$i]['en']
+                                    ?? null,
+
+                                'value' => $val['es']
+                                    ?? $val['en']
+                                    ?? null
+                            ];
+                        }
+                    }
+
+                    $raw[] = [
+                        'item_id'        => $v['id'],
+                        'padre_id'       => count($variants) > 1 ? $p['id'] : null,
+                        'item_nombre'    => $productName,
+                        'variants'       => $variantValues,
+                        'categoría'      => $categoria,
+                        'descripcion'    => $description,
+                        'stock_actual'   => $v['stock'] ?? null,
+                        'servicio'       => $isService ? 1 : 0,
+                        'precio'         => isset($v['price']) ? (float)$v['price'] : null,
+                        'codigo_barra'   => $v['barcode'] ?? null,
+                        'codigo_interno' => $v['sku'] ?? null
+                    ];
+                }
             }
-        }
+
+            $page++;
+        } while (count($products) === 200);
 
         return $raw;
     }

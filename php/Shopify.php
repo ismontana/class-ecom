@@ -62,7 +62,10 @@ class Shopify
                     id
                     title
                     description
-                    category { id fullName }
+                    category {
+                    id
+                    fullName
+                    }
                     variants(first: 50) {
                     nodes {
                         id
@@ -71,7 +74,13 @@ class Shopify
                         barcode
                         price
                         inventoryQuantity
-                        inventoryItem { requiresShipping }
+                        inventoryItem {
+                        requiresShipping
+                        }
+                        selectedOptions {
+                        name
+                        value
+                        }
                     }
                     }
                 }
@@ -101,13 +110,12 @@ class Shopify
 
                 foreach ($node['variants']['nodes'] as $variant) {
 
-                    // Extraer variantes
+                    $selectedOptions = $variant['selectedOptions'] ?? [];
                     $variantTitle = $variant['title'] ?? null;
-
                     if ($variantTitle === 'Default Title' || $variantTitle === null) {
                         $variants = [];
                     } else {
-                        $variants = array_map('trim', explode('/', $variantTitle));
+                        $variants = $selectedOptions;
                     }
 
                     $raw[] = [
@@ -121,7 +129,7 @@ class Shopify
                         'servicio'       => ($variant['inventoryItem']['requiresShipping'] ?? true) ? 0 : 1,
                         'precio'         => isset($variant['price']) ? (float)$variant['price'] : null,
                         'codigo_barra'   => $variant['barcode'] ?? null,
-                        'codigo_interno' => $variant['sku'] ?? null
+                        'codigo_interno' => $variant['sku'] ?? null,
                     ];
                 }
             }
