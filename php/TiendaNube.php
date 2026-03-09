@@ -77,6 +77,10 @@ class TiendaNube
                 $description = is_array($p['description'] ?? null)
                     ? ($p['description']['es'] ?? $p['description']['en'] ?? null)
                     : ($p['description'] ?? null);
+                
+                if ($description !== null) {
+                    $description = trim(preg_replace('/\s+/', ' ', strip_tags(html_entity_decode($description, ENT_QUOTES | ENT_HTML5, 'UTF-8'))));
+                }
 
                 $categoria = [];
 
