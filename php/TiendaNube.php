@@ -52,6 +52,7 @@ class TiendaNube
 
     # <--- PRODUCTS --->
 
+    # Obtiene desde la API de TiendaNube los productos
     public function fetchRawProducts(array $params = []): array
     {
         $page = 1;
@@ -145,6 +146,117 @@ class TiendaNube
         } while (count($products) === 200);
 
         return $raw;
+    }
+
+    # Crea un producto en TiendaNube
+    public function createProduct(array $item): array
+    {
+        $rawVariants = $item['variants'] ?? [];
+        $descripcion = $item['descripcion'] ?? null;
+
+        $body = [
+            'name'      => ['es' => $item['item_nombre'] ?? ''],
+            'published' => true,
+        ];
+
+        if ($descripcion) {
+            $body['description'] = ['es' => $descripcion];
+        }
+
+        $catIds = array_filter($item['categoria'] ?? [], 'is_numeric');
+        if (!empty($catIds)) {
+            $body['categories'] = array_map(fn($id) => ['id' => (int)$id], array_values($catIds));
+        }
+
+        if (empty($rawVariants)) {
+            $body['price'] = (float)($item['precio']     ?? 0);
+
+            $body['variants'] = [[
+                'price'   => (float)($item['precio']       ?? 0),
+                'stock'   => (int)($item['stock_actual']   ?? 0),
+                'sku'     => $item['codigo_interno'] ?? null,
+                'barcode' => $item['codigo_barra']   ?? null,
+            ]];
+
+            $response = $this->requestWithBody('POST', '/products', $body);
+
+            if (empty($response) || isset($response['code'])) {
+                $msg = $response['description'] ?? $response['message'] ?? 'Error desconocido';
+                return ['error' => "TiendaNube: {$msg}"];
+            }
+
+            $productId = $response['id'] ?? null;
+            if (!$productId) return ['error' => 'TiendaNube no devolvió el producto creado'];
+
+            $tnVariants = $response['variants'] ?? [];
+            $variantId  = $tnVariants[0]['id']  ?? $productId;
+
+            return [[
+                'id_externo' => (string)$variantId,
+                'padre_id'   => null
+            ]];
+        }
+
+        $attributeNames = [];
+        foreach ($rawVariants as $v) {
+            $name = $v['name'] ?? null;
+            if ($name && !in_array($name, $attributeNames, true)) {
+                $attributeNames[] = $name;
+            }
+        }
+        $body['attributes'] = array_map(fn($n) => ['es' => $n], $attributeNames);
+
+        $tnVariants = [];
+        foreach ($rawVariants as $v) {
+            $tnVariants[] = [
+                'price'   => (float)($v['precio']        ?? $item['precio']        ?? 0),
+                'stock'   => (int)($v['stock_actual']     ?? $item['stock_actual']  ?? 0),
+                'sku'     => $v['codigo_interno'] ?? $item['codigo_interno'] ?? null,
+                'barcode' => $v['codigo_barra']   ?? $item['codigo_barra']   ?? null,
+                'values'  => [['es' => $v['value'] ?? '']],
+            ];
+        }
+        $body['variants'] = $tnVariants;
+
+        $response = $this->requestWithBody('POST', '/products', $body);
+
+        if (empty($response) || isset($response['code'])) {
+            $msg = $response['description'] ?? $response['message'] ?? 'Error desconocido';
+            return ['error' => "TiendaNube: {$msg}"];
+        }
+
+        $productId  = $response['id'] ?? null;
+        if (!$productId) return ['error' => 'TiendaNube no devolvió el producto creado'];
+
+        $returnedVariants = $response['variants'] ?? [];
+        $hasManyVariants  = count($returnedVariants) > 1;
+
+        $result = [];
+        foreach ($returnedVariants as $v) {
+            $result[] = [
+                'id_externo' => (string)($v['id'] ?? ''),
+                'padre_id'   => $hasManyVariants ? (string)$productId : null
+            ];
+        }
+
+        return $result;
+    }
+
+    private function requestWithBody(string $method, string $endpoint, array $body): array
+    {
+        $json = json_encode($body, JSON_UNESCAPED_UNICODE);
+
+        $ch = curl_init($this->baseUrl . $endpoint);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $method);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, $json);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, $this->headers);
+
+        $response = curl_exec($ch);
+        curl_close($ch);
+
+        if ($response === false) return [];
+        return json_decode($response, true) ?? [];
     }
 
     # <--- ORDERS --->

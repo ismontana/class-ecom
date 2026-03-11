@@ -43,6 +43,7 @@ class Shopify
 
     # <--- PRODUCTS --->
 
+    # Obtiene desde la API de Shopify los productos
     public function fetchRawProducts(array $params = []): array
     {
         $raw = [];
@@ -102,7 +103,6 @@ class Shopify
                 $cursor = $edge['cursor'];
                 $node = $edge['node'];
 
-                // Categoría
                 $categoria = [];
                 if (!empty($node['category']['fullName'])) {
                     $categoria = array_map('trim', explode('>', $node['category']['fullName']));
@@ -138,6 +138,156 @@ class Shopify
         }
 
         return $raw;
+    }
+
+    # Crea un producto en Shopify
+    public function createProduct(array $item): array
+    {
+        $rawVariants      = $item['variants'] ?? [];
+        $requiresShipping = (int)($item['servicio'] ?? 0) === 0;
+        $title            = addslashes($item['item_nombre'] ?? '');
+        $description      = addslashes($item['descripcion'] ?? '');
+
+        if (empty($rawVariants)) {
+
+            $precio  = number_format((float)($item['precio'] ?? 0), 2, '.', '');
+            $stock   = (int)($item['stock_actual'] ?? 0);
+            $sku     = $item['codigo_interno'] ?? null;
+            $barcode = $item['codigo_barra']   ?? null;
+
+            $variantInput = $this->buildVariantInput([], $precio, $stock, $sku, $barcode, $requiresShipping);
+
+            $mutation = <<<GRAPHQL
+            mutation {
+                productCreate(input: {
+                    title: "{$title}"
+                    descriptionHtml: "{$description}"
+                    variants: [{$variantInput}]
+                }) {
+                    product {
+                        id
+                        variants(first: 1) { nodes { id } }
+                    }
+                    userErrors { field message }
+                }
+            }
+            GRAPHQL;
+
+            $response   = $this->graphql($mutation);
+            $userErrors = $response['data']['productCreate']['userErrors'] ?? [];
+
+            if (!empty($userErrors)) {
+                return ['error' => 'Shopify: ' . implode(' | ', array_column($userErrors, 'message'))];
+            }
+
+            $product = $response['data']['productCreate']['product'] ?? null;
+            if (!$product) return ['error' => 'Shopify no devolvió el producto creado'];
+
+            return [[
+                'id_externo' => $product['variants']['nodes'][0]['id'] ?? null,
+                'padre_id'   => null
+            ]];
+        }
+
+        $optionsMap = [];
+        foreach ($rawVariants as $v) {
+            $name  = $v['name']  ?? null;
+            $value = $v['value'] ?? null;
+            if ($name && $value) {
+                $optionsMap[$name][] = $value;
+            }
+        }
+
+        $optionLines = [];
+        foreach ($optionsMap as $optName => $values) {
+            $valuesStr     = implode('", "', array_unique($values));
+            $optionLines[] = "{name: \"{$optName}\", values: [\"{$valuesStr}\"]}";
+        }
+        $optionsGql = 'options: [' . implode(', ', $optionLines) . ']';
+
+        $variantBlocks = [];
+        foreach ($rawVariants as $v) {
+            $precio  = number_format((float)($v['precio']        ?? $item['precio']        ?? 0), 2, '.', '');
+            $stock   = (int)($v['stock_actual']  ?? $item['stock_actual']  ?? 0);
+            $sku     = $v['codigo_interno'] ?? $item['codigo_interno'] ?? null;
+            $barcode = $v['codigo_barra']   ?? $item['codigo_barra']   ?? null;
+
+            $optValue = $v['value'] ?? null;
+            $variantBlocks[] = $this->buildVariantInput(
+                $optValue ? [$optValue] : [],
+                $precio, $stock, $sku, $barcode, $requiresShipping
+            );
+        }
+        $variantsGql = implode(",\n", $variantBlocks);
+
+        $mutation = <<<GRAPHQL
+        mutation {
+            productCreate(input: {
+                title: "{$title}"
+                descriptionHtml: "{$description}"
+                {$optionsGql}
+                variants: [{$variantsGql}]
+            }) {
+                product {
+                    id
+                    variants(first: 50) { nodes { id } }
+                }
+                userErrors { field message }
+            }
+        }
+        GRAPHQL;
+
+        $response   = $this->graphql($mutation);
+        $userErrors = $response['data']['productCreate']['userErrors'] ?? [];
+
+        if (!empty($userErrors)) {
+            return ['error' => 'Shopify: ' . implode(' | ', array_column($userErrors, 'message'))];
+        }
+
+        $product = $response['data']['productCreate']['product'] ?? null;
+        if (!$product) return ['error' => 'Shopify no devolvió el producto creado'];
+
+        $productGid   = $product['id'];
+        $variantNodes = $product['variants']['nodes'] ?? [];
+        $hasManyVariants = count($variantNodes) > 1;
+
+        $result = [];
+        foreach ($variantNodes as $node) {
+            $result[] = [
+                'id_externo' => $node['id'],
+                'padre_id'   => $hasManyVariants ? $productGid : null
+            ];
+        }
+
+        return $result;
+    }
+
+    private function buildVariantInput(
+        array   $optionValues,
+        string  $precio,
+        int     $stock,
+        ?string $sku,
+        ?string $barcode,
+        bool    $requiresShipping
+    ): string {
+        $optStr  = !empty($optionValues)
+                        ? 'options: ["' . implode('", "', $optionValues) . '"]'
+                        : '';
+        $skuStr  = $sku     ? "sku: \"{$sku}\""        : '';
+        $barStr  = $barcode ? "barcode: \"{$barcode}\"" : '';
+        $shipStr = $requiresShipping ? 'true' : 'false';
+
+        return "{
+            {$optStr}
+            price: \"{$precio}\"
+            {$skuStr}
+            {$barStr}
+            inventoryQuantities: [{
+                availableQuantity: {$stock}
+                locationId: \"gid://shopify/Location/1\"
+            }]
+            inventoryItem: { requiresShipping: {$shipStr} }
+        }";
     }
 
     # <--- ORDERS --->
