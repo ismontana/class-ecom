@@ -37,6 +37,15 @@ class Ecommerce
 
     public function getApiProducts(array $platforms = [], array $session = []): array
     {
+        if (count($platforms) > 1) {
+            return [
+                'action' => 'getApiProducts',
+                'status' => 'error',
+                'code'   => $this->codeStr . '422',
+                'answer' => 'En getApiProducts solo se permite una plataforma en platforms[]'
+            ];
+        }
+
         $providers = $this->filterProviders($platforms);
         $itemsByPlatform = [];
         $db = (new Database())->connect();
@@ -248,6 +257,15 @@ class Ecommerce
 
     public function createProduct(array $dataList, array $session = [], array $platforms = []): array
     {
+        if (count($platforms) > 1) {
+            return [
+                'action' => 'createProduct',
+                'status' => 'error',
+                'code'   => $this->codeStr . '422',
+                'answer' => 'En createProduct solo se permite una plataforma en platforms[]'
+            ];
+        }
+
         $myposId = $session['mypos_id'] ?? '';
 
         if (empty($dataList)) {
@@ -428,6 +446,15 @@ class Ecommerce
 
     public function getApiOrders(array $platforms = [], array $session = []): array
     {
+        if (count($platforms) > 1) {
+            return [
+                'action' => 'getApiOrders',
+                'status' => 'error',
+                'code'   => $this->codeStr . '422',
+                'answer' => 'En getApiOrders solo se permite una plataforma en platforms[]'
+            ];
+        }
+
         $providers = $this->filterProviders($platforms);
         $ordersByPlatform = [];
         $db = (new Database())->connect();
@@ -443,8 +470,9 @@ class Ecommerce
                 $id_externo = (string)($raw['id_externo'] ?? '');
                 if ($id_externo === '') continue;
 
-                # customer
-                $customer_id = 0;
+                $noPedido = isset($raw['noPedido']) ? (string)$raw['noPedido'] : null;
+
+                $customer_id     = 0;
                 $customer_ext_id = (string)($raw['customer_ext_id'] ?? '');
 
                 if ($customer_ext_id !== '') {
@@ -462,67 +490,124 @@ class Ecommerce
                     $customer_id = $resolved_id ? (int)$resolved_id : 0;
                 }
 
-                # partes
-                $partes = $raw['partes'] ?? [];
-                $id_productos = 0;
+                # direccion_entrega: buscar dirección de envío en tabla address
+                $direccion_entrega = null;
+                $shippingAddr      = $raw['shipping_address'] ?? null;
 
-                foreach ($partes as $parte) {
-                    if (!empty($parte['item_aizu_id'])) {
-                        $id_productos = (int)$parte['item_aizu_id'];
-                        break;
+                if ($shippingAddr && $customer_id > 0) {
+                    $addrCalle = $shippingAddr['calle'] ?? null;
+                    $addrCp    = $shippingAddr['cp']    ?? null;
+
+                    if ($addrCalle || $addrCp) {
+                        $addrMatchSql    = "SELECT id FROM address WHERE mypos_id = ? AND customer_id = ?";
+                        $addrMatchTypes  = 'si';
+                        $addrMatchParams = [$myposId, $customer_id];
+
+                        if ($addrCalle) {
+                            $addrMatchSql    .= " AND calle = ?";
+                            $addrMatchTypes  .= 's';
+                            $addrMatchParams[] = $addrCalle;
+                        }
+                        if ($addrCp) {
+                            $addrMatchSql    .= " AND cp = ?";
+                            $addrMatchTypes  .= 's';
+                            $addrMatchParams[] = $addrCp;
+                        }
+                        $addrMatchSql .= " LIMIT 1";
+
+                        $addrMatchStmt = $db->prepare($addrMatchSql);
+                        $addrMatchStmt->bind_param($addrMatchTypes, ...$addrMatchParams);
+                        $addrMatchStmt->execute();
+                        $addrMatchStmt->bind_result($matched_addr_id);
+                        if ($addrMatchStmt->fetch()) {
+                            $direccion_entrega = (int)$matched_addr_id;
+                        }
+                        $addrMatchStmt->close();
                     }
                 }
 
+                # partes
+                $partes = $raw['partes'] ?? [];
+                $id_productos_arr = [];
+                $partes_actualizado = [];
+
+                foreach ($partes as $parte) {
+                    $item_ext = (string)($parte['item_id'] ?? '');
+                    if ($item_ext === '') {
+                        $partes_actualizado[] = array_merge($parte, ['item_aizu_id' => null]);
+                        continue;
+                    }
+
+                    $ppStmt = $db->prepare("
+                        SELECT id_interno
+                        FROM platform_products
+                        WHERE mypos_id = ? AND id_externo = ? AND origen = ?
+                        LIMIT 1
+                    ");
+                    $ppStmt->bind_param('sss', $myposId, $item_ext, $origen);
+                    $ppStmt->execute();
+                    $ppStmt->bind_result($resolved_product_id);
+                    $ppFound = $ppStmt->fetch();
+                    $ppStmt->close();
+
+                    if ($ppFound && $resolved_product_id) {
+                        $id_productos_arr[] = (string)(int)$resolved_product_id;
+                        $partes_actualizado[] = array_merge($parte, ['item_aizu_id' => (int)$resolved_product_id]);
+                    } else {
+                        $partes_actualizado[] = array_merge($parte, ['item_aizu_id' => null]);
+                    }
+                }
+
+                $raw['partes'] = $partes_actualizado;
+
+                $id_productos_arr = array_values(array_unique($id_productos_arr));
+                $id_productos = !empty($id_productos_arr) ? implode(',', $id_productos_arr) : '0';
+
                 $item_nombres = mb_substr(implode(',', array_column($partes, 'item_nombre')), 0, 150);
-                $cantidades   = mb_substr(implode(',', array_column($partes, 'cant')), 0, 150);
-                $precios      = mb_substr(implode(',', array_column($partes, 'precio')), 0, 150);
+                $cantidades   = mb_substr(implode(',', array_column($partes, 'cant')),        0, 150);
+                $precios      = mb_substr(implode(',', array_column($partes, 'precio')),      0, 150);
 
                 # vendedor
-                $vendedor = $raw['vendedor'] ?? [];
-                $vendedor_id = $vendedor['aizu_id'] ?? null;
-                $vendedor_user = $vendedor['user'] ?? $origen;
-                $vendedor_nombre = $vendedor['nombre'] ?? $origen;
+                $vendedor        = $raw['vendedor'] ?? [];
+                $vendedor_id     = $vendedor['aizu_id'] ?? null;
+                $vendedor_user   = $vendedor['user']    ?? $origen;
+                $vendedor_nombre = $vendedor['nombre']  ?? $origen;
 
                 # pago
-                $pago = $raw['pago'] ?? [];
-
-                $forma_pago = $pago['forma_pago'] ?? null;
+                $pago        = $raw['pago'] ?? [];
+                $forma_pago  = $pago['forma_pago']  ?? null;
                 $metodo_pago = $pago['metodo_pago'] ?? null;
-                $moneda = $pago['moneda'] ?? 'MXN';
-                $tasa_mon = isset($pago['tasa_moneda']) ? (float)$pago['tasa_moneda'] : 1.0;
-                
-                $anticipo = isset($raw['anticipo']) ? (float)$raw['anticipo'] : 0.00;
-                $descuento = isset($raw['descuento']) ? (float)$raw['descuento'] : 0.00;
-                $tipo_descuento = $raw['tipo_descuento'] ?? 'G';
+                $moneda      = $pago['moneda']      ?? 'MXN';
+                $tasa_mon    = isset($pago['tasa_moneda']) ? (float)$pago['tasa_moneda'] : 1.0;
 
-                # fechas
+                $anticipo       = isset($raw['anticipo'])    ? (float)$raw['anticipo']    : 0.00;
+                $descuento      = isset($raw['descuento'])   ? (float)$raw['descuento']   : 0.00;
+                $tipo_descuento = $raw['tipo_descuento']     ?? 'G';
+
                 $fecha_pedido  = $raw['fecha_pedido'] ?? null;
                 $fecha_inicio  = $raw['fecha_inicio'] ?? null;
                 $fecha_entrega = $raw['fecha_entrega'] ?? ($raw['fecha_final'] ?? null);
 
-                # iva
-                $iva = isset($raw['iva']) ? (float)$raw['iva'] : null;
+                $iva            = isset($raw['iva'])            ? (float)$raw['iva']            : null;
                 $porcentaje_iva = isset($raw['porcentaje_iva']) ? (float)$raw['porcentaje_iva'] : null;
 
-                # estado
-                $pagado = !empty($raw['pagado']) ? 1 : 0;
+                $pagado    = !empty($raw['pagado'])    ? 1 : 0;
                 $entregado = !empty($raw['entregado']) ? 1 : 0;
                 $cancelado = !empty($raw['cancelado']) ? 1 : 0;
                 $facturado = !empty($raw['facturado']) ? 1 : 0;
 
                 $hora_entrega_inicio = $raw['hora_entrega_inicio'] ?? '00:00:00';
-                $hora_entrega_final  = $raw['hora_entrega_final'] ?? '23:59:59';
-
-                $estimado = $raw['estimado'] ?? null;
+                $hora_entrega_final  = $raw['hora_entrega_final']  ?? '23:59:59';
+                $estimado            = $raw['estimado']            ?? null;
 
                 $folio_fiscal = $raw['folio_fiscal'] ?? null;
-                $rfc_emisor = $raw['rfc_emisor'] ?? null;
+                $rfc_emisor   = $raw['rfc_emisor']   ?? null;
                 $rfc_receptor = $raw['rfc_receptor'] ?? null;
 
                 $total = isset($raw['total']) ? (float)$raw['total'] : null;
                 $notas = $raw['notas'] ?? null;
 
-                # verfico si existe
+                # verificar si existe
                 $id_interno = null;
 
                 $chkStmt = $db->prepare("
@@ -539,7 +624,6 @@ class Ecommerce
 
                 $id_interno = $id_interno ? (int)$id_interno : null;
 
-                # actualizar
                 if ($exists && $id_interno) {
 
                     $uStmt = $db->prepare("
@@ -554,46 +638,27 @@ class Ecommerce
                             hora_entrega_inicio = ?, hora_entrega_final = ?, estimado = ?,
                             pagado = ?, entregado = ?, cancelado = ?, facturado = ?,
                             folio_fiscal = ?, rfc_emisor = ?, rfc_receptor = ?,
-                            notas = ?, updated_at = CURRENT_TIMESTAMP
+                            notas = ?,
+                            noPedido = ?, direccion_entrega = ?,
+                            updated_at = CURRENT_TIMESTAMP
                         WHERE mypos_id = ? AND id = ?
                     ");
 
                     $uStmt->bind_param(
-                        str_repeat('s', 34),
+                        str_repeat('s', 36),
                         $customer_id,
-                        $vendedor_id,
-                        $vendedor_user,
-                        $vendedor_nombre,
-                        $id_productos,
-                        $item_nombres,
-                        $cantidades,
-                        $precios,
-                        $forma_pago,
-                        $metodo_pago,
-                        $moneda,
-                        $tasa_mon,
-                        $total,
-                        $anticipo,
-                        $descuento,
-                        $tipo_descuento,
-                        $iva,
-                        $porcentaje_iva,
-                        $fecha_pedido,
-                        $fecha_inicio,
-                        $fecha_entrega,
-                        $hora_entrega_inicio,
-                        $hora_entrega_final,
-                        $estimado,
-                        $pagado,
-                        $entregado,
-                        $cancelado,
-                        $facturado,
-                        $folio_fiscal,
-                        $rfc_emisor,
-                        $rfc_receptor,
+                        $vendedor_id, $vendedor_user, $vendedor_nombre,
+                        $id_productos, $item_nombres, $cantidades, $precios,
+                        $forma_pago, $metodo_pago, $moneda, $tasa_mon,
+                        $total, $anticipo, $descuento, $tipo_descuento,
+                        $iva, $porcentaje_iva,
+                        $fecha_pedido, $fecha_inicio, $fecha_entrega,
+                        $hora_entrega_inicio, $hora_entrega_final, $estimado,
+                        $pagado, $entregado, $cancelado, $facturado,
+                        $folio_fiscal, $rfc_emisor, $rfc_receptor,
                         $notas,
-                        $myposId,
-                        $id_interno
+                        $noPedido, $direccion_entrega,
+                        $myposId, $id_interno
                     );
 
                     $uStmt->execute();
@@ -601,7 +666,6 @@ class Ecommerce
 
                 } else {
 
-                    # insertar
                     $iStmt = $db->prepare("
                         INSERT INTO orders (
                             mypos_id, customer_id,
@@ -614,7 +678,8 @@ class Ecommerce
                             hora_entrega_inicio, hora_entrega_final, estimado,
                             pagado, entregado, cancelado, facturado,
                             folio_fiscal, rfc_emisor, rfc_receptor,
-                            notas
+                            notas,
+                            noPedido, direccion_entrega
                         ) VALUES (
                             ?, ?,
                             ?, ?, ?,
@@ -626,45 +691,25 @@ class Ecommerce
                             ?, ?, ?,
                             ?, ?, ?, ?,
                             ?, ?, ?,
-                            ?
+                            ?,
+                            ?, ?
                         )
                     ");
 
                     $iStmt->bind_param(
-                        str_repeat('s', 33),
-                        $myposId,
-                        $customer_id,
-                        $vendedor_id,
-                        $vendedor_user,
-                        $vendedor_nombre,
-                        $id_productos,
-                        $item_nombres,
-                        $cantidades,
-                        $precios,
-                        $forma_pago,
-                        $metodo_pago,
-                        $moneda,
-                        $tasa_mon,
-                        $total,
-                        $anticipo,
-                        $descuento,
-                        $tipo_descuento,
-                        $iva,
-                        $porcentaje_iva,
-                        $fecha_pedido,
-                        $fecha_inicio,
-                        $fecha_entrega,
-                        $hora_entrega_inicio,
-                        $hora_entrega_final,
-                        $estimado,
-                        $pagado,
-                        $entregado,
-                        $cancelado,
-                        $facturado,
-                        $folio_fiscal,
-                        $rfc_emisor,
-                        $rfc_receptor,
-                        $notas
+                        str_repeat('s', 35),
+                        $myposId, $customer_id,
+                        $vendedor_id, $vendedor_user, $vendedor_nombre,
+                        $id_productos, $item_nombres, $cantidades, $precios,
+                        $forma_pago, $metodo_pago, $moneda, $tasa_mon,
+                        $total, $anticipo, $descuento, $tipo_descuento,
+                        $iva, $porcentaje_iva,
+                        $fecha_pedido, $fecha_inicio, $fecha_entrega,
+                        $hora_entrega_inicio, $hora_entrega_final, $estimado,
+                        $pagado, $entregado, $cancelado, $facturado,
+                        $folio_fiscal, $rfc_emisor, $rfc_receptor,
+                        $notas,
+                        $noPedido, $direccion_entrega
                     );
 
                     if (!$iStmt->execute()) {
@@ -702,39 +747,66 @@ class Ecommerce
 
         $sql = "
             SELECT
-                o.id                       AS order_aizu_id,
+                o.id,
                 o.mypos_id,
                 o.customer_id,
                 o.vendedor_id,
                 o.vendedor_user,
-                o.vendedor_nombre,
                 o.id_productos,
                 o.item_nombres,
                 o.cantidad,
                 o.precios,
-                o.cuenta_receptora_id,
-                o.cuenta_receptora_clabe,
-                o.cuenta_receptora_beneficiario,
-                o.comision_aizu_id,
-                o.comision_nombre,
-                o.comision_porcentaje,
-                o.comision_importe,
-                o.cuenta_emisora,
+                o.total,
+                o.descuento,
+                o.tipo_descuento,
+                o.iva,
+                o.porcentaje_iva,
                 o.forma_pago,
                 o.metodo_pago,
                 o.moneda,
                 o.tasa_moneda,
-                o.total,
-                o.pagado,
                 o.notas,
+                o.descontar_stock,
+                o.fecha_pedido,
+                o.fecha_inicio,
+                o.fecha_entrega,
+                o.hora_entrega_inicio,
+                o.hora_entrega_final,
+                o.pagado,
+                o.comision_aizu_id,
+                o.comision_importe,
+                o.entregado,
+                o.cancelado,
+                o.facturado,
+                o.folio_fiscal,
+                o.rfc_emisor,
+                o.rfc_receptor,
+                o.anticipo,
+                o.noPedido,
+                o.direccion_entrega,
                 o.created_at,
-                o.updated_at,
-                po.id_externo AS id_externo,
-                po.origen
+
+                c.nombre          AS cliente_nombre,
+
+                a.calle           AS addr_calle,
+                a.no_ext          AS addr_no_ext,
+                a.no_int          AS addr_no_int,
+                a.colonia         AS addr_colonia,
+                a.cp              AS addr_cp,
+                a.municipio       AS addr_municipio,
+                a.estado          AS addr_estado,
+                a.ciudad          AS addr_ciudad,
+                a.pais            AS addr_pais,
+                a.referencias     AS addr_referencias,
+                a.latitud         AS addr_latitud,
+                a.longitud        AS addr_longitud
+
             FROM   orders o
-            LEFT JOIN platform_orders po
-                ON po.mypos_id   = o.mypos_id
-                AND po.id_interno = o.id
+            LEFT JOIN customers c
+                ON c.id       = o.customer_id
+                AND c.mypos_id = o.mypos_id
+            LEFT JOIN address a
+                ON a.id       = o.direccion_entrega
             WHERE  o.mypos_id = ?
             LIMIT  ? OFFSET ?
         ";
@@ -745,36 +817,100 @@ class Ecommerce
         $result = $stmt->get_result();
 
         while ($row = $result->fetch_assoc()) {
+
+            $domicilio = implode(', ', array_filter([
+                $row['addr_calle'],
+                $row['addr_no_ext'] ? 'No. ' . $row['addr_no_ext'] : null,
+                $row['addr_no_int'] ? 'Int. ' . $row['addr_no_int'] : null,
+                $row['addr_colonia'],
+                $row['addr_municipio'],
+                $row['addr_estado'],
+                $row['addr_cp'] ? 'C.P. ' . $row['addr_cp'] : null,
+                $row['addr_pais'],
+            ])) ?: null;
+
+            $gps = ($row['addr_latitud'] !== null && $row['addr_longitud'] !== null)
+                ? $row['addr_latitud'] . ',' . $row['addr_longitud']
+                : null;
+
             $orders[] = [
-                'order_aizu_id'                 => $row['order_aizu_id'],
-                'mypos_id'                      => $row['mypos_id'],
-                'customer_id'                   => $row['customer_id'] !== null ? (int)$row['customer_id'] : null,
-                'vendedor_id'                   => $row['vendedor_id'] !== null ? (int)$row['vendedor_id'] : null,
-                'vendedor_user'                 => $row['vendedor_user'],
-                'vendedor_nombre'               => $row['vendedor_nombre'],
-                'id_productos'                  => $row['id_productos'] !== null ? (int)$row['id_productos'] : 0,
-                'item_nombres'                  => $row['item_nombres'],
-                'cantidad'                      => $row['cantidad'],
-                'precios'                       => $row['precios'],
-                'cuenta_receptora_id'           => $row['cuenta_receptora_id'],
-                'cuenta_receptora_clabe'        => $row['cuenta_receptora_clabe'],
-                'cuenta_receptora_beneficiario' => $row['cuenta_receptora_beneficiario'],
-                'comision_aizu_id'              => $row['comision_aizu_id'],
-                'comision_nombre'               => $row['comision_nombre'],
-                'comision_porcentaje'           => $row['comision_porcentaje'] !== null ? (float)$row['comision_porcentaje'] : null,
-                'comision_importe'              => $row['comision_importe'] !== null ? (float)$row['comision_importe'] : null,
-                'cuenta_emisora'                => $row['cuenta_emisora'],
-                'forma_pago'                    => $row['forma_pago'],
-                'metodo_pago'                   => $row['metodo_pago'],
-                'moneda'                        => $row['moneda'],
-                'tasa_moneda'                   => $row['tasa_moneda'] !== null ? (float)$row['tasa_moneda'] : null,
-                'total'                         => $row['total'] !== null ? (float)$row['total'] : null,
-                'pagado'                        => isset($row['pagado']) ? (int)$row['pagado'] : 0,
-                'notas'                         => $row['notas'],
-                'created_at'                    => $row['created_at'],
-                'updated_at'                    => $row['updated_at'],
-                'id_externo'                    => $row['id_externo'],
-                'origen'                        => $row['origen']
+                'mypos_id'                => $row['mypos_id'],
+                'id'                      => (int)$row['id'],
+                'noPedido'                => $row['noPedido'],
+                'id_conekta'              => null,
+                'status_conekta'          => null,
+                'status_ruta'             => null,
+                'tipo_precio'             => null,
+                'tipos_precio'            => null,
+                'producto'                => $row['item_nombres'],
+                'id_producto'             => $row['id_productos'],
+                'cantidad'                => $row['cantidad'],
+                'precio'                  => $row['precios'],
+                'total'                   => $row['total'] !== null ? (string)$row['total'] : null,
+                'total_comision_ruta'     => null,
+                'total_descuento'         => $row['descuento'] !== null ? (string)$row['descuento'] : null,
+                'concepto_descuento'      => $row['tipo_descuento'],
+                'monto_descuento_producto'=> null,
+                'tipoProducto'            => null,
+                'lotes'                   => null,
+                'fecha_rensus'            => null,
+                'iva'                     => $row['iva'],
+                'porcentaje_iva'          => $row['porcentaje_iva'] !== null ? (float)$row['porcentaje_iva'] : null,
+                'sumar_iva'               => null,
+                'claveSat'                => null,
+                'unidadSat'               => null,
+                'tipo_pago'               => $row['forma_pago'],
+                'banco'                   => null,
+                'metodo_pago'             => $row['metodo_pago'],
+                'moneda'                  => $row['moneda'],
+                'monedaTipoCambio'        => $row['tasa_moneda'] !== null ? (float)$row['tasa_moneda'] : null,
+                'notas'                   => $row['notas'],
+                'descuento_stock'         => (int)$row['descontar_stock'],
+                'fecha_pedido'            => $row['fecha_pedido'],
+                'fecha_inicio'            => $row['fecha_inicio'],
+                'fecha_entrega'           => $row['fecha_entrega'],
+                'hora_entrega_inicio'     => $row['hora_entrega_inicio'],
+                'hora_entrega_final'      => $row['hora_entrega_final'],
+                'dias_retraso'            => null,
+                'cliente'                 => $row['cliente_nombre'],
+                'id_cliente'              => $row['customer_id'] !== null ? (int)$row['customer_id'] : null,
+                'encargados'              => null,
+                'pagado'                  => (int)$row['pagado'],
+                'empleado_id'             => $row['vendedor_id'],
+                'comision_vendedor'       => $row['comision_importe'] !== null ? (string)$row['comision_importe'] : null,
+                'id_comision_general'     => $row['comision_aizu_id'] !== null ? (int)$row['comision_aizu_id'] : null,
+                'entregado'               => (int)$row['entregado'],
+                'fecha_entregado'         => null,
+                'cancelado'               => (int)$row['cancelado'],
+                'fecha_cancelado'         => null,
+                'facturado'               => (int)$row['facturado'],
+                'folioFiscal'             => $row['folio_fiscal'],
+                'rfc_emisor'              => $row['rfc_emisor'],
+                'rfc_receptor'            => $row['rfc_receptor'],
+                'fecha_factura'           => null,
+                'facturaXml'              => null,
+                'facturaPdf'              => null,
+                'facturaCancelada'        => null,
+                'tipoFactura'             => null,
+                'totalFactura'            => null,
+                'id_ruta_origen'          => null,
+                'id_ruta'                 => null,
+                'corte'                   => null,
+                'totalAnticipo'           => $row['anticipo'] !== null ? (string)$row['anticipo'] : null,
+                'kiosko'                  => null,
+                'recoleccion'             => null,
+                'domicilioEntrega'        => $domicilio,
+                'coordenadasGPSEntrega'   => $gps,
+                'etq'                     => null,
+                'idTasaDeInteres'         => null,
+                'idAval'                  => null,
+                'idBeneficiario'          => null,
+                'factorISR'               => null,
+                'factorIVA'               => null,
+                'cantPeriodRecurrencia'   => null,
+                'periodicidadRecurrencia' => null,
+                'idInicioRecurrencia'     => null,
+                'fechaAlta'               => $row['created_at'],
             ];
         }
 
@@ -792,6 +928,15 @@ class Ecommerce
     # Obtiene los clientes desde las APIs y los sincroniza con customers + address + platform_customers
     public function getApiCustomers(array $platforms = [], array $session = []): array
     {
+        if (count($platforms) > 1) {
+            return [
+                'action' => 'getApiCustomers',
+                'status' => 'error',
+                'code'   => $this->codeStr . '422',
+                'answer' => 'En getApiCustomers solo se permite una plataforma en platforms[]'
+            ];
+        }
+
         $providers = $this->filterProviders($platforms);
         $customersByPlatform = [];
         $db = (new Database())->connect();
@@ -1457,6 +1602,15 @@ class Ecommerce
 
     public function createCustomer(array $data, array $session = [], array $platforms = []): array
     {
+        if (count($platforms) > 1) {
+            return [
+                'action' => 'createCustomer',
+                'status' => 'error',
+                'code'   => $this->codeStr . '422',
+                'answer' => 'En createCustomer solo se permite una plataforma en platforms[]'
+            ];
+        }
+
         $providers = $this->filterProviders($platforms);
         $db = (new Database())->connect();
         $myposId = $session['mypos_id'] ?? '';
@@ -2607,6 +2761,15 @@ class Ecommerce
 
     public function pushCustomers(array $session = [], array $platforms = []): array
     {
+        if (count($platforms) > 1) {
+            return [
+                'action' => 'pushCustomers',
+                'status' => 'error',
+                'code'   => $this->codeStr . '422',
+                'answer' => 'En pushCustomers solo se permite una plataforma en platforms[]'
+            ];
+        }
+
         $providers = $this->filterProviders($platforms);
 
         if (empty($providers)) {

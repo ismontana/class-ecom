@@ -89,40 +89,40 @@ class Shopify
 
             $query = <<<GRAPHQL
             query {
-            products(first: 50 $after) {
-                edges {
-                cursor
-                node {
-                    id
-                    title
-                    description
-                    category {
-                    id
-                    fullName
-                    }
-                    variants(first: 50) {
-                    nodes {
-                        id
-                        title
-                        sku
-                        barcode
-                        price
-                        inventoryQuantity
-                        inventoryItem {
-                        requiresShipping
+                products(first: 50 $after) {
+                    edges {
+                        cursor
+                        node {
+                            id
+                            title
+                            description
+                            category {
+                                id
+                                fullName
+                            }
+                            variants(first: 50) {
+                                nodes {
+                                    id
+                                    title
+                                    sku
+                                    barcode
+                                    price
+                                    inventoryQuantity
+                                    inventoryItem {
+                                        requiresShipping
+                                    }
+                                    selectedOptions {
+                                        name
+                                        value
+                                    }
+                                }
+                            }
                         }
-                        selectedOptions {
-                        name
-                        value
-                        }
                     }
+                    pageInfo {
+                        hasNextPage
                     }
                 }
-                }
-                pageInfo {
-                hasNextPage
-                }
-            }
             }
             GRAPHQL;
 
@@ -145,19 +145,25 @@ class Shopify
                     $categoria = array_map('trim', explode('>', $node['category']['fullName']));
                 }
 
-                foreach ($node['variants']['nodes'] as $variant) {
+                $variantsNodes = $node['variants']['nodes'] ?? [];
+                $hasVariants = count($variantsNodes) > 1;
+
+                foreach ($variantsNodes as $variant) {
 
                     $selectedOptions = $variant['selectedOptions'] ?? [];
                     $variantTitle = $variant['title'] ?? null;
-                    if ($variantTitle === 'Default Title' || $variantTitle === null) {
-                        $variants = [];
+
+                    if ($hasVariants) {
+                        $variants = ($variantTitle === 'Default Title' || $variantTitle === null)
+                            ? []
+                            : $selectedOptions;
                     } else {
-                        $variants = $selectedOptions;
+                        $variants = [];
                     }
 
                     $raw[] = [
-                        'item_id'        => $variant['id'],
-                        'padre_id'       => count($node['variants']['nodes']) > 1 ? $node['id'] : null,
+                        'item_id'        => $hasVariants ? ($variant['id'] ?? '') : ($node['id'] ?? ''),
+                        'padre_id'       => $hasVariants ? ($node['id'] ?? null) : null,
                         'item_nombre'    => $node['title'],
                         'variants'       => $variants,
                         'categoría'      => $categoria,
@@ -365,6 +371,7 @@ class Shopify
 
     # <--- ORDERS --->
 
+    # Obtiene las ordenes desde Shopify
     public function fetchRawOrders(): array
     {
         $cursor      = null;
@@ -392,6 +399,14 @@ class Shopify
                                 id
                             }
 
+                            shippingAddress {
+                                address1
+                                city
+                                province
+                                country
+                                zip
+                            }
+
                             currencyCode
                             note
 
@@ -400,38 +415,23 @@ class Shopify
                             unpaid
 
                             totalPriceSet {
-                                shopMoney {
-                                    amount
-                                    currencyCode
-                                }
+                                shopMoney { amount currencyCode }
                             }
                             totalTaxSet {
-                                shopMoney {
-                                    amount
-                                    currencyCode
-                                }
+                                shopMoney { amount currencyCode }
                             }
                             totalReceivedSet {
-                                shopMoney {
-                                    amount
-                                    currencyCode
-                                }
+                                shopMoney { amount currencyCode }
                             }
                             totalOutstandingSet {
-                                shopMoney {
-                                    amount
-                                    currencyCode
-                                }
+                                shopMoney { amount currencyCode }
                             }
 
                             taxLines {
                                 title
                                 rate
                                 priceSet {
-                                    shopMoney {
-                                        amount
-                                        currencyCode
-                                    }
+                                    shopMoney { amount currencyCode }
                                 }
                             }
 
@@ -467,6 +467,7 @@ class Shopify
                                         requiresShipping
                                         product {
                                             id
+                                            hasOnlyDefaultVariant
                                         }
                                         variant {
                                             id
@@ -474,20 +475,13 @@ class Shopify
                                             sku
                                         }
                                         originalUnitPriceSet {
-                                            shopMoney {
-                                                amount
-                                                currencyCode
-                                            }
+                                            shopMoney { amount currencyCode }
                                         }
-                                            
                                         taxLines {
                                             title
                                             rate
                                             priceSet {
-                                                shopMoney {
-                                                    amount
-                                                    currencyCode
-                                                }
+                                                shopMoney { amount currencyCode }
                                             }
                                         }
                                     }
@@ -504,7 +498,6 @@ class Shopify
 
             $response = $this->graphql($query);
 
-            # Si ocurre un error, interrumpimos y devolvemos lo que llevamos
             if (($response['status'] ?? '') === 'error') {
                 break;
             }
@@ -514,29 +507,30 @@ class Shopify
             $hasNextPage = $ordersData['pageInfo']['hasNextPage'] ?? false;
 
             foreach ($edges as $edge) {
-                $cursor = $edge['cursor'];   # se actualiza para la siguiente página
+                $cursor = $edge['cursor'];
                 $node   = $edge['node'];
 
-                # ID externo del pedido (ya viene en formato GID)
-                $idExterno = $node['id'];
-
-                # ID externo del cliente (si existe)
+                $idExterno     = $node['id'];
                 $customerExtId = $node['customer']['id'] ?? '';
 
-                # partes del pedido
                 $partes = [];
                 foreach ($node['lineItems']['edges'] ?? [] as $lineEdge) {
                     $line = $lineEdge['node'];
 
-                    # ID externo del producto (si existe)
-                    $productId = $line['product']['id'] ?? null;
-                    $itemExtId = $productId ?: '';
+                    $productId             = $line['product']['id'] ?? null;
+                    $hasOnlyDefaultVariant = $line['product']['hasOnlyDefaultVariant'] ?? null;
+                    $variantId             = $line['variant']['id'] ?? null;
 
-                    # Precio unitario
-                    $unitPrice = $line['originalUnitPriceSet']['shopMoney']['amount'] ?? 0;
+                    if ($hasOnlyDefaultVariant === true) {
+                        $itemExtId = $productId ?: '';
+                    } elseif ($hasOnlyDefaultVariant === false && $variantId) {
+                        $itemExtId = $variantId;
+                    } else {
+                        $itemExtId = $variantId ?: ($productId ?: '');
+                    }
 
-                    # SKU y barcode vienen desde variant
-                    $variantSku     = $line['variant']['sku'] ?? null;
+                    $unitPrice      = $line['originalUnitPriceSet']['shopMoney']['amount'] ?? 0;
+                    $variantSku     = $line['variant']['sku']     ?? null;
                     $variantBarcode = $line['variant']['barcode'] ?? null;
 
                     $partes[] = [
@@ -553,13 +547,10 @@ class Shopify
                     ];
                 }
 
-                # Pago
-
-                # Forma de pago (tarjeta / efectivo / transferencia)
                 $gateways     = $node['paymentGatewayNames'] ?? [];
                 $transactions = $node['transactions'] ?? [];
+                $formaPago    = null;
 
-                # Si hay transacciones, miramos el tipo de paymentDetails
                 foreach ($transactions as $tx) {
                     $gateway          = $tx['gateway'] ?? '';
                     $formattedGateway = strtolower($tx['formattedGateway'] ?? '');
@@ -567,114 +558,73 @@ class Shopify
 
                     if (isset($paymentDetails['paymentMethodName'])) {
                         $methodName = strtolower($paymentDetails['paymentMethodName']);
-
-                        if ($methodName === 'card') {
-                            $formaPago = 'TARJETA';
-                            break;
-                        }
-
-                        if (strpos($methodName, 'shop') !== false) {
-                            $formaPago = 'SHOP_PAY';
-                            break;
-                        }
+                        if ($methodName === 'card') { $formaPago = 'TARJETA'; break; }
+                        if (strpos($methodName, 'shop') !== false) { $formaPago = 'SHOP_PAY'; break; }
                     }
 
                     if (
-                        strpos($formattedGateway, 'cash') !== false
-                        || strpos($formattedGateway, 'efectivo') !== false
-                        || strpos($formattedGateway, 'manual') !== false
-                    ) {
-                        $formaPago = 'EFECTIVO';
-                        break;
-                    }
+                        strpos($formattedGateway, 'cash')      !== false ||
+                        strpos($formattedGateway, 'efectivo')  !== false ||
+                        strpos($formattedGateway, 'manual')    !== false
+                    ) { $formaPago = 'EFECTIVO'; break; }
 
                     if (
-                        strpos($formattedGateway, 'bank') !== false
-                        || strpos($formattedGateway, 'transfer') !== false
-                        || strpos($formattedGateway, 'transferencia') !== false
-                    ) {
-                        $formaPago = 'TRANSFERENCIA';
-                        break;
-                    }
+                        strpos($formattedGateway, 'bank')         !== false ||
+                        strpos($formattedGateway, 'transfer')     !== false ||
+                        strpos($formattedGateway, 'transferencia')!== false
+                    ) { $formaPago = 'TRANSFERENCIA'; break; }
 
-                    # Si nada anterior aplica, nos quedamos con el identificador bruto
                     if (!$formaPago && $gateway) {
                         $formaPago = 'EFECTIVO';
                     }
                 }
 
-                # Si no hay transacciones o no detectamos nada, caemos a paymentGatewayNames
                 if (!$formaPago && !empty($gateways)) {
                     $formaPago = $gateways[0];
                 }
 
-                # Metodo de pago (contado / crédito) desde paymentTerms
                 $paymentTerms = $node['paymentTerms'] ?? null;
-                $metodoPago   = 'CONTADO'; # por defecto
+                $metodoPago   = 'PUE';
 
                 if ($paymentTerms) {
                     $dueInDays        = $paymentTerms['dueInDays'] ?? null;
                     $paymentTermsName = strtolower($paymentTerms['paymentTermsName'] ?? '');
-                    $paymentTermsType = $paymentTerms['paymentTermsType'] ?? null;
-
-                    # si dueInDays > 0 -> crédito
-                    # si el nombre es como "net" (Net 7, Net 30) -> crédito
                     if (
                         (is_int($dueInDays) && $dueInDays > 0) ||
                         strpos($paymentTermsName, 'net') !== false
                     ) {
-                        $metodoPago = 'CREDITO';
-                    } else {
-                        # dueInDays 0 o null y nombre tipo "due on receipt", "contado", etc.
-                        $metodoPago = 'CONTADO';
+                        $metodoPago = 'PPD';
                     }
                 }
 
-                # Estados financieros / totales
                 $displayFinancialStatus = strtoupper($node['displayFinancialStatus'] ?? '');
                 $fullyPaid              = (bool)($node['fullyPaid'] ?? false);
-                $unpaid                 = (bool)($node['unpaid'] ?? false);
+                $unpaid                 = (bool)($node['unpaid']    ?? false);
 
                 $totalPedido    = isset($node['totalPriceSet']['shopMoney']['amount'])
-                    ? (float)$node['totalPriceSet']['shopMoney']['amount']
-                    : null;
+                    ? (float)$node['totalPriceSet']['shopMoney']['amount'] : null;
                 $totalImpuestos = isset($node['totalTaxSet']['shopMoney']['amount'])
-                    ? (float)$node['totalTaxSet']['shopMoney']['amount']
-                    : null;
+                    ? (float)$node['totalTaxSet']['shopMoney']['amount'] : null;
                 $totalRecibido  = isset($node['totalReceivedSet']['shopMoney']['amount'])
-                    ? (float)$node['totalReceivedSet']['shopMoney']['amount']
-                    : 0.0;
+                    ? (float)$node['totalReceivedSet']['shopMoney']['amount'] : 0.0;
                 $totalPendiente = isset($node['totalOutstandingSet']['shopMoney']['amount'])
-                    ? (float)$node['totalOutstandingSet']['shopMoney']['amount']
-                    : 0.0;
+                    ? (float)$node['totalOutstandingSet']['shopMoney']['amount'] : 0.0;
 
-                # Anticipo: importe cobrado mientras aún hay saldo pendiente
-                $anticipo = ($totalRecibido > 0 && $totalPendiente > 0)
-                    ? $totalRecibido
-                    : 0.0;
+                $anticipo = ($totalRecibido > 0 && $totalPendiente > 0) ? $totalRecibido : 0.0;
 
-                # IVA total y porcentaje IVA (si hay una línea que parezca IVA)
                 $ivaTotal      = $totalImpuestos;
                 $ivaPorcentaje = null;
 
-                $ivaLine = null;
                 foreach ($node['taxLines'] ?? [] as $taxLine) {
-                    $title = strtolower($taxLine['title'] ?? '');
-                    if (strpos($title, 'iva') !== false) {
-                        $ivaLine = $taxLine;
+                    if (strpos(strtolower($taxLine['title'] ?? ''), 'iva') !== false) {
+                        $ivaPorcentaje = isset($taxLine['rate']) ? (float)$taxLine['rate'] * 100.0 : null;
                         break;
                     }
                 }
 
-                if ($ivaLine && isset($ivaLine['rate'])) {
-                    $ivaPorcentaje = (float)$ivaLine['rate'] * 100.0;
-                }
-
-                # Estado logístico / cancelación
                 $fulfillmentStatus = strtoupper($node['displayFulfillmentStatus'] ?? '');
                 $cancelledAt       = $node['cancelledAt'] ?? null;
-
-                $estaCancelado = !empty($cancelledAt);
+                $estaCancelado     = !empty($cancelledAt);
 
                 if ($estaCancelado) {
                     $estadoPedido = 'CANCELADO';
@@ -686,8 +636,6 @@ class Shopify
                     $estadoPedido = 'PENDIENTE';
                 }
 
-                # Pagado o no por flags de Shopify
-                $pagadoCompletamente = $fullyPaid;
                 $pagado = in_array($displayFinancialStatus, ['PAID', 'PARTIALLY_PAID', 'PARTIALLY_REFUNDED'], true);
 
                 $pago = [
@@ -699,51 +647,53 @@ class Shopify
                     'comision_porcentaje'           => null,
                     'comision_importe'              => null,
                     'cuenta_emisora'                => null,
-                    'forma_pago'                    => $formaPago,     # EFECTIVO / TARJETA / TRANSFERENCIA
-                    'metodo_pago'                   => $metodoPago,    # CONTADO / CREDITO
-
+                    'forma_pago'                    => $formaPago,
+                    'metodo_pago'                   => $metodoPago,
                     'moneda'                        => $node['currencyCode'] ?? 'MXN',
                     'tasa_moneda'                   => 1.0,
                 ];
 
-                # Vendedor estatico
                 $vendedor = [
                     'aizu_id' => null,
                     'user'    => 'Shopify',
                     'nombre'  => 'Shopify',
                 ];
 
-                # Fechas
                 $createdAt   = $node['createdAt']   ?? null;
                 $processedAt = $node['processedAt'] ?? null;
                 $closedAt    = $node['closedAt']    ?? null;
 
-                $fechaPedido  = $createdAt;
-                $fechaInicio  = $processedAt ?? $createdAt;
-                $fechaFinal   = $closedAt ?? $cancelledAt ?? null;
+                $shippingNode = $node['shippingAddress'] ?? null;
+                $shippingAddress = $shippingNode ? [
+                    'calle'  => $shippingNode['address1'] ?? null,
+                    'cp'     => $shippingNode['zip']      ?? null,
+                    'ciudad' => $shippingNode['city']     ?? null,
+                    'estado' => $shippingNode['province'] ?? null,
+                    'pais'   => $shippingNode['country']  ?? null,
+                ] : null;
 
                 $normalized[] = [
-                    'id_externo'        => $idExterno,
-                    'customer_ext_id'   => $customerExtId,
-                    'vendedor'          => $vendedor,
-                    'pago'              => $pago,
-                    'partes'            => $partes,
-                    'total'             => $totalPedido,
-                    'notas'             => $node['note'] ?? null,
-                    'fecha_pedido'      => $fechaPedido,
-                    'fecha_inicio'      => $fechaInicio,
-                    'fecha_final'       => $fechaFinal,
-
-                    'anticipo'          => $anticipo,
-                    'iva_total'         => $ivaTotal,
-                    'iva_porcentaje'    => $ivaPorcentaje,
-
-                    'pagado'            => $pagado,
-                    'pagado_completo'   => $pagadoCompletamente,
-                    'estado_pedido'     => $estadoPedido,
-
-                    # Aún no calculamos facturado (dependerá de metafields/tags de factura)
-                    'facturado'         => null,
+                    'id_externo'       => $idExterno,
+                    'noPedido'          => isset($node['name'])
+                        ? (int) filter_var($node['name'], FILTER_SANITIZE_NUMBER_INT)
+                        : null,
+                    'customer_ext_id'  => $customerExtId,
+                    'shipping_address' => $shippingAddress,
+                    'vendedor'         => $vendedor,
+                    'pago'             => $pago,
+                    'partes'           => $partes,
+                    'total'            => $totalPedido,
+                    'notas'            => $node['note'] ?? null,
+                    'fecha_pedido'     => $createdAt,
+                    'fecha_inicio'     => $processedAt ?? $createdAt,
+                    'fecha_final'      => $closedAt ?? $cancelledAt ?? null,
+                    'anticipo'         => $anticipo,
+                    'iva_total'        => $ivaTotal,
+                    'iva_porcentaje'   => $ivaPorcentaje,
+                    'pagado'           => $pagado,
+                    'pagado_completo'  => $fullyPaid,
+                    'estado_pedido'    => $estadoPedido,
+                    'facturado'        => null,
                 ];
             }
         }

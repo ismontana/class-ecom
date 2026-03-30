@@ -164,6 +164,7 @@ class TiendaNube
                 $isService = !($p['requires_shipping'] ?? true);
 
                 $variants = $p['variants'] ?? [];
+                $hasVariants = count($variants) > 1;
 
                 if (empty($variants)) {
                     $variants = [[
@@ -174,6 +175,7 @@ class TiendaNube
                         'sku'     => null,
                         'barcode' => null
                     ]];
+                    $hasVariants = false;
                 }
 
                 foreach ($variants as $v) {
@@ -181,14 +183,11 @@ class TiendaNube
                     $variantValues = [];
 
                     if (!empty($v['values'])) {
-
                         foreach ($v['values'] as $i => $val) {
-
                             $variantValues[] = [
                                 'name' => $p['attributes'][$i]['es']
                                     ?? $p['attributes'][$i]['en']
                                     ?? null,
-
                                 'value' => $val['es']
                                     ?? $val['en']
                                     ?? null
@@ -197,8 +196,8 @@ class TiendaNube
                     }
 
                     $raw[] = [
-                        'item_id'        => $v['id'],
-                        'padre_id'       => count($variants) > 1 ? $p['id'] : null,
+                        'item_id'        => $hasVariants ? (string)($v['id'] ?? '') : (string)($p['id'] ?? ''),
+                        'padre_id'       => $hasVariants ? (string)($p['id'] ?? null) : null,
                         'item_nombre'    => $productName,
                         'variants'       => $variantValues,
                         'categoría'      => $categoria,
@@ -336,46 +335,33 @@ class TiendaNube
  
     public function fetchRawOrders(): array
     {
-        # Obtener todos los pedidos
-        $allOrders = [];
-        $page      = 1;
+        $allOrders  = [];
+        $normalized = [];
+        $page       = 1;
 
         do {
-            $response = $this->request('GET', "/orders?per_page=200&page={$page}");
+            $response = $this->request('GET', "/orders?page={$page}&per_page=200");
 
-            if (empty($response) || !is_array($response)) {
+            if (empty($response) || ($response['status'] ?? '') === 'error') {
                 break;
             }
 
             $allOrders = array_merge($allOrders, $response);
             $page++;
-
         } while (count($response) === 200);
-
-        $normalized = [];
 
         foreach ($allOrders as $order) {
 
             $orderId = $order['id'] ?? null;
-            if (!$orderId) {
-                continue;
-            }
+            if (!$orderId) continue;
 
-            # id_externo
-            $idExterno = (string)$orderId;
-
-            # customer
+            $idExterno     = (string)$orderId;
             $customerData  = $order['customer'] ?? [];
-            $customerExtId = isset($customerData['id'])
-                ? (string)$customerData['id']
-                : '';
+            $customerExtId = isset($customerData['id']) ? (string)$customerData['id'] : '';
 
-            # partes
             $partes = [];
             foreach (($order['products'] ?? []) as $prod) {
-
                 $productId = $prod['product_id'] ?? ($prod['id'] ?? null);
-
                 $partes[] = [
                     'item_id'        => $productId ? (string)$productId : '',
                     'item_aizu_id'   => null,
@@ -383,46 +369,29 @@ class TiendaNube
                     'cant'           => (int)($prod['quantity'] ?? 1),
                     'precio'         => (float)($prod['price'] ?? 0),
                     'codigo_barra'   => $prod['barcode'] ?? null,
-                    'codigo_interno' => $prod['sku'] ?? null,
+                    'codigo_interno' => $prod['sku']     ?? null,
                     'stock_actual'   => null,
                     'descripcion'    => null,
                     'servicio'       => 0,
                 ];
             }
 
-            # PAGO 
-
-            # Estado del pago
             $estadoPago = $order['payment_status'] ?? 'pending';
-
-            # Forma de pago
-            $formaPago = null;
+            $formaPago  = null;
 
             if (!empty($order['payment_name'])) {
                 $name = strtolower($order['payment_name']);
-
-                if (str_contains($name, 'tarjeta') || str_contains($name, 'card')) {
-                    $formaPago = 'TARJETA';
-                } elseif (str_contains($name, 'transfer')) {
-                    $formaPago = 'TRANSFERENCIA';
-                } elseif (str_contains($name, 'efectivo')) {
-                    $formaPago = 'EFECTIVO';
-                } elseif (str_contains($name, 'mercado')) {
-                    $formaPago = 'MERCADO_PAGO';
-                } elseif (str_contains($name, 'paypal')) {
-                    $formaPago = 'PAYPAL';
-                } else {
-                    $formaPago = strtoupper($order['payment_name']);
-                }
+                if      (str_contains($name, 'tarjeta') || str_contains($name, 'card')) $formaPago = 'TARJETA';
+                elseif  (str_contains($name, 'transfer'))   $formaPago = 'TRANSFERENCIA';
+                elseif  (str_contains($name, 'efectivo'))   $formaPago = 'EFECTIVO';
+                elseif  (str_contains($name, 'mercado'))    $formaPago = 'MERCADO_PAGO';
+                elseif  (str_contains($name, 'paypal'))     $formaPago = 'PAYPAL';
+                else                                        $formaPago = strtoupper($order['payment_name']);
             }
 
-            # fallback técnico
             if (!$formaPago && !empty($order['gateway'])) {
                 $formaPago = strtoupper($order['gateway']);
             }
-
-            # Método de pago -> falta que lo encuentre
-            $metodoPago = null;
 
             $pago = [
                 'cuenta_receptora_id'           => null,
@@ -433,45 +402,91 @@ class TiendaNube
                 'comision_porcentaje'           => null,
                 'comision_importe'              => null,
                 'cuenta_emisora'                => null,
-
                 'forma_pago'                    => $formaPago,
-                'metodo_pago'                   => $metodoPago,
+                'metodo_pago'                   => null,
                 'estado_pago'                   => $estadoPago,
-
                 'moneda'                        => $order['currency'] ?? 'MXN',
                 'tasa_moneda'                   => 1.0,
             ];
 
-            # vendedor
             $vendedor = [
                 'aizu_id' => null,
                 'user'    => 'TiendaNube',
                 'nombre'  => 'TiendaNube',
             ];
 
-            # total
             $total = null;
-            if (isset($order['total'])) {
-                $total = (float)$order['total'];
-            } elseif (isset($order['subtotal'])) {
-                $total = (float)$order['subtotal'];
-            }
+            if      (isset($order['total']))    $total = (float)$order['total'];
+            elseif  (isset($order['subtotal'])) $total = (float)$order['subtotal'];
 
-            # notas
-            $notas = $order['owner_note'] ?? null;
+            $shippingRaw     = $order['shipping_address'] ?? null;
+            $shippingAddress = $shippingRaw ? [
+                'calle'  => $shippingRaw['address']  ?? null,
+                'cp'     => $shippingRaw['zipcode']  ?? null,
+                'ciudad' => $shippingRaw['city']     ?? null,
+                'estado' => $shippingRaw['province'] ?? null,
+                'pais'   => $shippingRaw['country']  ?? null,
+            ] : null;
 
             $normalized[] = [
-                'id_externo'      => $idExterno,
-                'customer_ext_id' => $customerExtId,
-                'vendedor'        => $vendedor,
-                'pago'            => $pago,
-                'partes'          => $partes,
-                'total'           => $total,
-                'notas'           => $notas,
+                'id_externo'       => $idExterno,
+                'noPedido'         => isset($order['number']) ? (string)$order['number'] : null,
+                'customer_ext_id'  => $customerExtId,
+                'shipping_address' => $shippingAddress,
+                'vendedor'         => $vendedor,
+                'pago'             => $pago,
+                'partes'           => $partes,
+                'total'            => $total,
+                'notas'            => $order['owner_note'] ?? null,
             ];
         }
 
         return $normalized;
+    }
+
+    private function buildProductVariantMap(): array
+    {
+        $map = [];
+        $page = 1;
+
+        do {
+            $response = $this->request('GET', "/products?page={$page}&per_page=200");
+
+            if (empty($response) || ($response['status'] ?? '') === 'error') {
+                break;
+            }
+
+            foreach ($response as $p) {
+                $productId = $p['id'] ?? null;
+                if (!$productId) {
+                    continue;
+                }
+
+                $variants = $p['variants'] ?? [];
+                $hasVariants = count($variants) > 1;
+
+                # Si tiene variantes, guardar el primer variant_id
+                if ($hasVariants && !empty($variants)) {
+                    $firstVariantId = $variants[0]['id'] ?? $productId;
+                    $map[$productId] = [
+                        'hasVariants' => true,
+                        'variantId' => (string)$firstVariantId,
+                        'productId' => (string)$productId
+                    ];
+                } else {
+                    # Producto único
+                    $map[$productId] = [
+                        'hasVariants' => false,
+                        'variantId' => null,
+                        'productId' => (string)$productId
+                    ];
+                }
+            }
+
+            $page++;
+        } while (count($response) === 200);
+
+        return $map;
     }
 
     # <--- CUSTOMERS --->
