@@ -7,6 +7,36 @@ class Utils
         '+509', '+592', '+593', '+595', '+597', '+598'
     ];
 
+    private static array $countryMap = [
+        'méxico' => 'Mexico',
+        'mexico' => 'Mexico',
+        'mx' => 'Mexico',
+
+        'estados unidos' => 'United States',
+        'usa' => 'United States',
+        'us' => 'United States',
+        'united states' => 'United States',
+
+        'canada' => 'Canada',
+        'ca' => 'Canada',
+
+        'españa' => 'Spain',
+        'spain' => 'Spain',
+
+        'colombia' => 'Colombia',
+        'co' => 'Colombia',
+
+        'argentina' => 'Argentina',
+        'ar' => 'Argentina',
+
+        'chile' => 'Chile',
+        'cl' => 'Chile',
+
+        'peru' => 'Peru',
+        'perú' => 'Peru',
+        'pe' => 'Peru'
+    ];
+
     public static function extractPhoneData(?string $phone): array
     {
         if (empty($phone)) {
@@ -36,4 +66,45 @@ class Utils
             'numero' => $normalized
         ];
     }
+
+    public static function normalizeCountry(?string $country): string
+    {
+        if (empty($country)) {
+            return 'Mexico';
+        }
+
+        $key = mb_strtolower(trim($country));
+
+        return self::$countryMap[$key] ?? $country;
+    }
+
+    public static function countryToISO2(?string $country): string
+{
+    if (!$country) {
+        return 'MX';
+    }
+
+    $map = [
+        'méxico' => 'MX',
+        'mexico' => 'MX',
+        'mx' => 'MX',
+
+        'united states' => 'US',
+        'estados unidos' => 'US',
+        'usa' => 'US',
+
+        'argentina' => 'AR',
+        'colombia' => 'CO',
+        'chile' => 'CL',
+        'peru' => 'PE',
+        'perú' => 'PE',
+        'spain' => 'ES',
+        'españa' => 'ES'
+    ];
+
+    $key = mb_strtolower(trim($country));
+
+    return $map[$key] ?? 'MX';
 }
+}
+
