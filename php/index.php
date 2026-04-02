@@ -98,11 +98,24 @@ switch ($action) {
     case 'getOrders':
         $result = $ecommerce->getOrdersFromDb($session);
         break;
+    case 'getOrderById':
+        $id     = (int)($input['id'] ?? 0);
+        $result = $ecommerce->getOrderById($id, $session);
+        break;
+    case 'linkOrder':
+        $result = $ecommerce->linkOrder($data, $session, $platforms);
+        break;
     case 'createOrder':
-        // $result = $ecommerce->createOrder($data, $session);
+        $result = $ecommerce->createOrder($data, $session, $platforms);
+        break;
+    case 'updateOrder':
+        $result = $ecommerce->updateOrder($data, $session);
         break;
     case 'cancelOrder':
-        // $result = $ecommerce->deleteOrder($data, $session);
+        $result = $ecommerce->cancelOrder($data, $session);
+        break;
+    case 'pushOrders':
+        $result = $ecommerce->pushOrders($session, $platforms);
         break;
 
     # acciones de clientes
@@ -125,12 +138,9 @@ switch ($action) {
     case 'updateCustomer':
         $result = $ecommerce->updateCustomer($data, $session);
         break;
-    // case 'deleteCustomer':
-    //     $result = $ecommerce->deleteCustomer($data, $session, $platforms);
-    //     break;
     case 'pushCustomers':
-    $result = $ecommerce->pushCustomers($session, $platforms);
-    break;
+        $result = $ecommerce->pushCustomers($session, $platforms);
+        break;
 
     # acciones de direcciones
     case 'createAddress':

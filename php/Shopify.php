@@ -183,6 +183,260 @@ class Shopify
         return $raw;
     }
 
+        # Crea un borrador de pedido en Shopify (draftOrder) y lo completa
+    # Recibe $order con: customer_ext_id, partes[], pago, notas, total
+    # Retorna: [['id_externo' => 'gid://shopify/Order/...', 'padre_id' => null]]
+    public function createOrder(array $order): array
+    {
+        # --- 1. Line items ---
+        $lineItemsGql = '';
+        foreach (($order['partes'] ?? []) as $parte) {
+            $qty   = (int)($parte['cant']   ?? 1);
+            $price = number_format((float)($parte['precio'] ?? 0), 2, '.', '');
+            $title = addslashes($parte['item_nombre'] ?? 'Producto');
+
+            # Si tenemos id_externo del producto en Shopify, lo usamos como variantId
+            if (!empty($parte['item_id'])) {
+                $variantId     = addslashes($parte['item_id']);
+                $lineItemsGql .= "{ variantId: \"{$variantId}\" quantity: {$qty} originalUnitPrice: \"{$price}\" }\n";
+            } else {
+                $lineItemsGql .= "{ title: \"{$title}\" quantity: {$qty} originalUnitPrice: \"{$price}\" }\n";
+            }
+        }
+
+        if (empty($lineItemsGql)) {
+            $lineItemsGql = "{ title: \"Pedido\" quantity: 1 originalUnitPrice: \"0.00\" }\n";
+        }
+
+        # --- 2. Customer ---
+        $customerInput = '';
+        if (!empty($order['customer_ext_id'])) {
+            $custId        = addslashes($order['customer_ext_id']);
+            $customerInput = "customerId: \"{$custId}\"";
+        }
+
+        # --- 3. Nota y moneda ---
+        $notas    = addslashes($order['notas'] ?? '');
+        $pago     = $order['pago'] ?? [];
+        $moneda   = strtoupper($pago['moneda'] ?? $order['moneda'] ?? 'MXN');
+
+        # --- 4. Dirección de envío ---
+        $shippingInput = '';
+        if (!empty($order['shipping_address'])) {
+            $addr          = $order['shipping_address'];
+            $addr1         = addslashes($addr['calle']  ?? '');
+            $city          = addslashes($addr['ciudad'] ?? '');
+            $province      = addslashes($addr['estado'] ?? '');
+            $country       = addslashes(Utils::normalizeCountry($addr['pais'] ?? 'Mexico'));
+            $zip           = addslashes($addr['cp']     ?? '');
+            $shippingInput = <<<GQL
+            shippingAddress: {
+                address1: "{$addr1}"
+                city: "{$city}"
+                province: "{$province}"
+                country: "{$country}"
+                zip: "{$zip}"
+            }
+            GQL;
+        }
+
+        # --- 5. Crear draft order ---
+        $mutation = <<<GRAPHQL
+        mutation {
+            draftOrderCreate(input: {
+                {$customerInput}
+                lineItems: [{$lineItemsGql}]
+                note: "{$notas}"
+                {$shippingInput}
+            }) {
+                draftOrder { id }
+                userErrors { field message }
+            }
+        }
+        GRAPHQL;
+
+        $response = $this->graphql($mutation);
+
+        if (($response['status'] ?? '') === 'error') {
+            return $response;
+        }
+
+        $userErrors = $response['data']['draftOrderCreate']['userErrors'] ?? [];
+
+        if (!empty($userErrors)) {
+            return [
+                'status' => 'error',
+                'code'   => $this->codeStr . '422',
+                'answer' => implode(' | ', array_column($userErrors, 'message'))
+            ];
+        }
+
+        $draftOrderNode = $response['data']['draftOrderCreate']['draftOrder'] ?? null;
+
+        if (!$draftOrderNode) {
+            return [
+                'status' => 'error',
+                'code'   => $this->codeStr . '502',
+                'answer' => 'Shopify no devolvió el borrador de pedido'
+            ];
+        }
+
+        $draftId = addslashes($draftOrderNode['id']);
+
+        # --- 6. Completar el draft order para convertirlo en Order ---
+        $completeMutation = <<<GRAPHQL
+        mutation {
+            draftOrderComplete(id: "{$draftId}") {
+                draftOrder {
+                    order { id }
+                }
+                userErrors { field message }
+            }
+        }
+        GRAPHQL;
+
+        $completeResponse = $this->graphql($completeMutation);
+
+        if (($completeResponse['status'] ?? '') === 'error') {
+            # Devolver el draftOrder como fallback
+            return [[
+                'id_externo' => $draftOrderNode['id'],
+                'padre_id'   => null
+            ]];
+        }
+
+        $completeErrors = $completeResponse['data']['draftOrderComplete']['userErrors'] ?? [];
+
+        if (!empty($completeErrors)) {
+            return [
+                'status' => 'error',
+                'code'   => $this->codeStr . '422',
+                'answer' => implode(' | ', array_column($completeErrors, 'message'))
+            ];
+        }
+
+        $orderId = $completeResponse['data']['draftOrderComplete']['draftOrder']['order']['id'] ?? $draftOrderNode['id'];
+
+        return [[
+            'id_externo' => $orderId,
+            'padre_id'   => null
+        ]];
+    }
+
+    # Actualiza campos editables de un pedido en Shopify
+    # Solo se actualizan los campos presentes en $order
+    public function updateOrder(string $idExterno, array $order): array
+    {
+        $fields = [];
+
+        if (array_key_exists('notas', $order)) {
+            $notas    = addslashes($order['notas'] ?? '');
+            $fields[] = "note: \"{$notas}\"";
+        }
+
+        if (array_key_exists('tags', $order)) {
+            $tags     = addslashes($order['tags'] ?? '');
+            $fields[] = "tags: \"{$tags}\"";
+        }
+
+        if (!empty($order['shipping_address'])) {
+            $addr     = $order['shipping_address'];
+            $addr1    = addslashes($addr['calle']  ?? '');
+            $city     = addslashes($addr['ciudad'] ?? '');
+            $province = addslashes($addr['estado'] ?? '');
+            $country  = addslashes(Utils::normalizeCountry($addr['pais'] ?? 'Mexico'));
+            $zip      = addslashes($addr['cp']     ?? '');
+            $fields[] = <<<GQL
+            shippingAddress: {
+                address1: "{$addr1}"
+                city: "{$city}"
+                province: "{$province}"
+                country: "{$country}"
+                zip: "{$zip}"
+            }
+            GQL;
+        }
+
+        if (empty($fields)) {
+            return ['status' => 'ok'];
+        }
+
+        $fieldsGql = implode("\n", $fields);
+        $id        = addslashes($idExterno);
+
+        $mutation = <<<GRAPHQL
+        mutation {
+            orderUpdate(input: {
+                id: "{$id}"
+                {$fieldsGql}
+            }) {
+                order { id }
+                userErrors { field message }
+            }
+        }
+        GRAPHQL;
+
+        $response = $this->graphql($mutation);
+
+        if (($response['status'] ?? '') === 'error') {
+            return $response;
+        }
+
+        $userErrors = $response['data']['orderUpdate']['userErrors'] ?? [];
+
+        if (!empty($userErrors)) {
+            return [
+                'status' => 'error',
+                'code'   => $this->codeStr . '422',
+                'answer' => implode(' | ', array_column($userErrors, 'message'))
+            ];
+        }
+
+        return ['status' => 'ok'];
+    }
+
+    # Cancela un pedido en Shopify
+    public function cancelOrder(string $idExterno): array
+    {
+        $id = addslashes($idExterno);
+
+        $mutation = <<<GRAPHQL
+        mutation {
+            orderCancel(
+                orderId: "{$id}"
+                reason: OTHER
+                notifyCustomer: false
+                refund: false
+                restock: true
+            ) {
+                job { id }
+                orderCancelUserErrors { field message code }
+                userErrors { field message }
+            }
+        }
+        GRAPHQL;
+
+        $response = $this->graphql($mutation);
+
+        if (($response['status'] ?? '') === 'error') {
+            return $response;
+        }
+
+        $cancelErrors = $response['data']['orderCancel']['orderCancelUserErrors'] ?? [];
+        $userErrors   = $response['data']['orderCancel']['userErrors']            ?? [];
+        $allErrors    = array_merge($cancelErrors, $userErrors);
+
+        if (!empty($allErrors)) {
+            return [
+                'status' => 'error',
+                'code'   => $this->codeStr . '422',
+                'answer' => implode(' | ', array_column($allErrors, 'message'))
+            ];
+        }
+
+        return ['status' => 'ok'];
+    }
+
     # Crea un producto en Shopify
     public function createProduct(array $item): array
     {
@@ -1206,39 +1460,6 @@ class Shopify
                 'status' => 'error',
                 'code'   => $this->codeStr . $httpCode,
                 'answer' => $msg
-            ];
-        }
-
-        return ['status' => 'ok'];
-    }
-
-    # Elimina un cliente en Shopify
-    public function deleteCustomer(string $idExterno): array
-    {
-        $id = addslashes($idExterno);
-
-        $mutation = <<<GRAPHQL
-        mutation {
-            customerDelete(input: { id: "{$id}" }) {
-                deletedCustomerId
-                userErrors { field message }
-            }
-        }
-        GRAPHQL;
-
-        $response = $this->graphql($mutation);
-
-        if (($response['status'] ?? '') === 'error') {
-            return $response;
-        }
-
-        $userErrors = $response['data']['customerDelete']['userErrors'] ?? [];
-
-        if (!empty($userErrors)) {
-            return [
-                'status' => 'error',
-                'code'   => $this->codeStr . '422',
-                'answer' => implode(' | ', array_column($userErrors, 'message'))
             ];
         }
 

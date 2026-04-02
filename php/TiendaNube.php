@@ -489,6 +489,160 @@ class TiendaNube
         return $map;
     }
 
+        # Crea un pedido en TiendaNube
+    # Recibe $order con: customer_ext_id, partes[], pago, notas, total, etc.
+    # Retorna: [['id_externo' => '12345', 'padre_id' => null]]
+    public function createOrder(array $order): array
+    {
+        $partes   = $order['partes'] ?? [];
+        $pago     = $order['pago']   ?? [];
+
+        # --- Productos ---
+        $products = [];
+        foreach ($partes as $parte) {
+            $item = [
+                'quantity' => (int)($parte['cant']   ?? 1),
+                'price'    => number_format((float)($parte['precio'] ?? 0), 2, '.', ''),
+                'name'     => $parte['item_nombre']  ?? 'Producto',
+            ];
+
+            # Si tenemos el id_externo (variant_id) del producto en TiendaNube
+            if (!empty($parte['item_id'])) {
+                $item['variant_id'] = (int)$parte['item_id'];
+            }
+
+            $products[] = $item;
+        }
+
+        if (empty($products)) {
+            $products[] = [
+                'name'     => 'Pedido',
+                'quantity' => 1,
+                'price'    => number_format((float)($order['total'] ?? 0), 2, '.', ''),
+            ];
+        }
+
+        # --- Body del pedido ---
+        $body = [
+            'products' => $products,
+        ];
+
+        # Customer
+        if (!empty($order['customer_ext_id'])) {
+            $body['customer'] = ['id' => (int)$order['customer_ext_id']];
+        }
+
+        # Nota
+        if (!empty($order['notas'])) {
+            $body['owner_note'] = $order['notas'];
+        }
+
+        # Forma de pago
+        if (!empty($pago['forma_pago'])) {
+            $body['payment_name'] = $pago['forma_pago'];
+        }
+
+        # Moneda
+        if (!empty($pago['moneda'])) {
+            $body['currency'] = strtoupper($pago['moneda']);
+        }
+
+        # Dirección de envío
+        if (!empty($order['shipping_address'])) {
+            $addr = $order['shipping_address'];
+            $body['shipping_address'] = [
+                'address'  => $addr['calle']   ?? '',
+                'city'     => $addr['ciudad']  ?? '',
+                'province' => $addr['estado']  ?? '',
+                'country'  => Utils::countryToISO2($addr['pais'] ?? 'Mexico'),
+                'zipcode'  => $addr['cp']      ?? '',
+            ];
+        }
+
+        $response = $this->requestWithBody('POST', '/orders', $body);
+
+        if (empty($response) || ($response['status'] ?? '') === 'error') {
+            return $response ?: [
+                'status' => 'error',
+                'code'   => $this->codeStr . '502',
+                'answer' => 'Sin respuesta de TiendaNube al crear pedido'
+            ];
+        }
+
+        $id = $response['id'] ?? null;
+
+        if (!$id) {
+            return [
+                'status' => 'error',
+                'code'   => $this->codeStr . '502',
+                'answer' => 'TiendaNube no devolvió el pedido creado'
+            ];
+        }
+
+        return [[
+            'id_externo' => (string)$id,
+            'padre_id'   => null
+        ]];
+    }
+
+    # Actualiza campos editables de un pedido en TiendaNube
+    # Solo se actualizan los campos presentes en $order
+    public function updateOrder(string $idExterno, array $order): array
+    {
+        $body = [];
+
+        if (array_key_exists('notas', $order)) {
+            $body['owner_note'] = $order['notas'] ?? null;
+        }
+
+        if (!empty($order['pago']['forma_pago'])) {
+            $body['payment_name'] = $order['pago']['forma_pago'];
+        }
+
+        if (!empty($order['shipping_address'])) {
+            $addr = $order['shipping_address'];
+            $body['shipping_address'] = [
+                'address'  => $addr['calle']   ?? '',
+                'city'     => $addr['ciudad']  ?? '',
+                'province' => $addr['estado']  ?? '',
+                'country'  => Utils::countryToISO2($addr['pais'] ?? 'Mexico'),
+                'zipcode'  => $addr['cp']      ?? '',
+            ];
+        }
+
+        if (empty($body)) {
+            return ['status' => 'ok'];
+        }
+
+        $response = $this->requestWithBody('PUT', "/orders/{$idExterno}", $body);
+
+        if (empty($response) || ($response['status'] ?? '') === 'error') {
+            return $response ?: [
+                'status' => 'error',
+                'code'   => $this->codeStr . '502',
+                'answer' => 'Sin respuesta de TiendaNube al actualizar pedido'
+            ];
+        }
+
+        return ['status' => 'ok'];
+    }
+
+    # Cancela un pedido en TiendaNube
+    public function cancelOrder(string $idExterno): array
+    {
+        $response = $this->requestWithBody('POST', "/orders/{$idExterno}/cancel", []);
+
+        if (empty($response) || ($response['status'] ?? '') === 'error') {
+            # TiendaNube devuelve 200 con body vacío en cancelaciones exitosas
+            # Solo falla si hay un error real
+            if (($response['status'] ?? '') === 'error') {
+                return $response;
+            }
+        }
+
+        return ['status' => 'ok'];
+    }
+
     # <--- CUSTOMERS --->
 
     # Obtiene los clientes desde la API de TiendaNube
@@ -733,18 +887,6 @@ class TiendaNube
                 'code'   => $this->codeStr . '502',
                 'answer' => 'Sin respuesta de TiendaNube al sincronizar dirección'
             ];
-        }
-
-        return ['status' => 'ok'];
-    }
-
-    # Elimina un cliente en TiendaNube
-    public function deleteCustomer(string $idExterno): array
-    {
-        $response = $this->request('DELETE', "/customers/{$idExterno}");
-
-        if (($response['status'] ?? '') === 'error') {
-            return $response;
         }
 
         return ['status' => 'ok'];

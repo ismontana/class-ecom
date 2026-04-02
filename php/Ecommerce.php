@@ -923,6 +923,950 @@ class Ecommerce
         ];
     }
 
+        # Obtiene un pedido específico desde la BD con sus vínculos de plataforma
+    public function getOrderById(int $idInterno, array $session = []): array
+    {
+        $db      = (new Database())->connect();
+        $myposId = $session['mypos_id'] ?? '';
+
+        $stmt = $db->prepare("
+            SELECT
+                o.id, o.mypos_id, o.customer_id, o.noPedido,
+                o.vendedor_id, o.vendedor_user, o.vendedor_nombre,
+                o.id_productos, o.item_nombres, o.cantidad, o.precios,
+                o.cuenta_receptora_id, o.cuenta_receptora_clabe, o.cuenta_receptora_beneficiario,
+                o.comision_aizu_id, o.comision_nombre, o.comision_porcentaje, o.comision_importe,
+                o.cuenta_emisora, o.forma_pago, o.metodo_pago, o.moneda, o.tasa_moneda,
+                o.total, o.anticipo, o.descuento, o.tipo_descuento,
+                o.iva, o.porcentaje_iva,
+                o.direccion_entrega,
+                o.fecha_pedido, o.fecha_inicio, o.fecha_entrega, o.estimado,
+                o.hora_entrega_inicio, o.hora_entrega_final,
+                o.pagado, o.entregado, o.cancelado, o.descontar_stock, o.facturado,
+                o.folio_fiscal, o.rfc_emisor, o.rfc_receptor,
+                o.notas, o.created_at, o.updated_at,
+                po.id_externo AS order_id_externo,
+                po.origen     AS order_origen
+            FROM   orders o
+            LEFT JOIN platform_orders po
+                   ON po.mypos_id   = o.mypos_id
+                  AND po.id_interno = o.id
+            WHERE  o.id = ? AND o.mypos_id = ?
+        ");
+        $stmt->bind_param('is', $idInterno, $myposId);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        $stmt->close();
+
+        $order     = null;
+        $platforms = [];
+
+        while ($row = $result->fetch_assoc()) {
+            if (!$order) {
+                $order = [
+                    'id'                            => (int)$row['id'],
+                    'mypos_id'                      => $row['mypos_id'],
+                    'noPedido'                      => $row['noPedido'],
+                    'customer_id'                   => (int)$row['customer_id'],
+                    'vendedor_id'                   => $row['vendedor_id'],
+                    'vendedor_user'                 => $row['vendedor_user'],
+                    'vendedor_nombre'               => $row['vendedor_nombre'],
+                    'id_productos'                  => $row['id_productos'],
+                    'item_nombres'                  => $row['item_nombres'],
+                    'cantidad'                      => $row['cantidad'],
+                    'precios'                       => $row['precios'],
+                    'cuenta_receptora_id'           => $row['cuenta_receptora_id'],
+                    'cuenta_receptora_clabe'        => $row['cuenta_receptora_clabe'],
+                    'cuenta_receptora_beneficiario' => $row['cuenta_receptora_beneficiario'],
+                    'comision_aizu_id'              => $row['comision_aizu_id'],
+                    'comision_nombre'               => $row['comision_nombre'],
+                    'comision_porcentaje'           => $row['comision_porcentaje'] !== null ? (float)$row['comision_porcentaje'] : null,
+                    'comision_importe'              => $row['comision_importe']    !== null ? (float)$row['comision_importe']    : null,
+                    'cuenta_emisora'                => $row['cuenta_emisora'],
+                    'forma_pago'                    => $row['forma_pago'],
+                    'metodo_pago'                   => $row['metodo_pago'],
+                    'moneda'                        => $row['moneda'],
+                    'tasa_moneda'                   => $row['tasa_moneda']    !== null ? (float)$row['tasa_moneda']    : null,
+                    'total'                         => $row['total']          !== null ? (float)$row['total']          : null,
+                    'anticipo'                      => $row['anticipo']       !== null ? (float)$row['anticipo']       : null,
+                    'descuento'                     => $row['descuento']      !== null ? (float)$row['descuento']      : null,
+                    'tipo_descuento'                => $row['tipo_descuento'],
+                    'iva'                           => $row['iva']            !== null ? (float)$row['iva']            : null,
+                    'porcentaje_iva'                => $row['porcentaje_iva'] !== null ? (float)$row['porcentaje_iva'] : null,
+                    'direccion_entrega'             => (int)$row['direccion_entrega'],
+                    'fecha_pedido'                  => $row['fecha_pedido'],
+                    'fecha_inicio'                  => $row['fecha_inicio'],
+                    'fecha_entrega'                 => $row['fecha_entrega'],
+                    'hora_entrega_inicio'           => $row['hora_entrega_inicio'],
+                    'hora_entrega_final'            => $row['hora_entrega_final'],
+                    'estimado'                      => $row['estimado'],
+                    'pagado'                        => (int)$row['pagado'],
+                    'entregado'                     => (int)$row['entregado'],
+                    'cancelado'                     => (int)$row['cancelado'],
+                    'descontar_stock'               => (int)$row['descontar_stock'],
+                    'facturado'                     => (int)$row['facturado'],
+                    'folio_fiscal'                  => $row['folio_fiscal'],
+                    'rfc_emisor'                    => $row['rfc_emisor'],
+                    'rfc_receptor'                  => $row['rfc_receptor'],
+                    'notas'                         => $row['notas'],
+                    'created_at'                    => $row['created_at'],
+                    'updated_at'                    => $row['updated_at'],
+                ];
+            }
+
+            if ($row['order_origen']) {
+                $platforms[] = [
+                    'origen'     => $row['order_origen'],
+                    'id_externo' => $row['order_id_externo'],
+                ];
+            }
+        }
+
+        if (!$order) {
+            return [
+                'action' => 'getOrderById',
+                'status' => 'error',
+                'code'   => $this->codeStr . '404',
+                'answer' => 'Pedido no encontrado'
+            ];
+        }
+
+        $order['platforms'] = $platforms;
+
+        return [
+            'action' => 'getOrderById',
+            'order'  => $order
+        ];
+    }
+
+    # Crea uno o más pedidos en la BD y opcionalmente en plataformas
+    public function createOrder(array $data, array $session = [], array $platforms = []): array
+    {
+
+        $providers = $this->filterProviders($platforms);
+        $db        = (new Database())->connect();
+        $myposId   = $session['mypos_id'] ?? '';
+        $created   = [];
+
+        foreach ($data as $order) {
+
+            $customer_id = $order['customer_id'] ?? null;
+            $partes      = $order['partes']       ?? [];
+            $noPedido    = $order['noPedido']      ?? null;
+
+            # Validar campos obligatorios
+            if (!$customer_id) {
+                $created[] = [
+                    'status' => 'error',
+                    'code'   => $this->codeStr . '422',
+                    'answer' => 'El campo customer_id es obligatorio'
+                ];
+                continue;
+            }
+
+            if (empty($partes)) {
+                $created[] = [
+                    'status' => 'error',
+                    'code'   => $this->codeStr . '422',
+                    'answer' => 'El pedido debe tener al menos un producto en partes[]'
+                ];
+                continue;
+            }
+
+            # Verificar que el cliente existe
+            $custStmt = $db->prepare("SELECT id FROM customers WHERE id = ? AND mypos_id = ? LIMIT 1");
+            $custStmt->bind_param('is', $customer_id, $myposId);
+            $custStmt->execute();
+            $custStmt->store_result();
+
+            if ($custStmt->num_rows === 0) {
+                $custStmt->close();
+                $created[] = [
+                    'status' => 'error',
+                    'code'   => $this->codeStr . '404',
+                    'answer' => "Cliente con id {$customer_id} no encontrado"
+                ];
+                continue;
+            }
+            $custStmt->close();
+
+            # Verificar duplicado por noPedido
+            if ($noPedido !== null && $noPedido !== '') {
+                $dupStmt = $db->prepare("SELECT id FROM orders WHERE mypos_id = ? AND noPedido = ? LIMIT 1");
+                $dupStmt->bind_param('ss', $myposId, $noPedido);
+                $dupStmt->execute();
+                $dupStmt->store_result();
+
+                if ($dupStmt->num_rows > 0) {
+                    $dupStmt->close();
+                    $created[] = [
+                        'noPedido' => $noPedido,
+                        'status'   => 'error',
+                        'code'     => $this->codeStr . '409',
+                        'answer'   => "Ya existe un pedido con noPedido {$noPedido}"
+                    ];
+                    continue;
+                }
+                $dupStmt->close();
+            }
+
+            # Construir campos derivados de partes
+            $id_productos_arr = array_filter(
+                array_map(fn($p) => isset($p['item_aizu_id']) ? (string)(int)$p['item_aizu_id'] : null, $partes)
+            );
+            $id_productos = !empty($id_productos_arr) ? implode(',', array_values($id_productos_arr)) : '0';
+            $item_nombres = mb_substr(implode(',', array_column($partes, 'item_nombre')), 0, 150);
+            $cantidades   = mb_substr(implode(',', array_column($partes, 'cant')),        0, 150);
+            $precios      = mb_substr(implode(',', array_column($partes, 'precio')),      0, 150);
+
+            # Datos de pago
+            $pago        = $order['pago']        ?? [];
+            $forma_pago  = $pago['forma_pago']   ?? null;
+            $metodo_pago = $pago['metodo_pago']  ?? null;
+            $moneda      = $pago['moneda']        ?? 'MXN';
+            $tasa_mon    = isset($pago['tasa_moneda']) ? (float)$pago['tasa_moneda'] : 1.0;
+
+            # Vendedor
+            $vendedor        = $order['vendedor'] ?? [];
+            $vendedor_id     = $vendedor['aizu_id'] ?? null;
+            $vendedor_user   = $vendedor['user']    ?? null;
+            $vendedor_nombre = $vendedor['nombre']  ?? null;
+
+            # Cuenta receptora / comisión
+            $cuenta_rec_id    = $order['cuenta_receptora_id']           ?? null;
+            $cuenta_rec_clabe = $order['cuenta_receptora_clabe']         ?? null;
+            $cuenta_rec_benef = $order['cuenta_receptora_beneficiario']  ?? null;
+            $comision_id      = $order['comision_aizu_id']               ?? null;
+            $comision_nombre  = $order['comision_nombre']                ?? null;
+            $comision_porc    = isset($order['comision_porcentaje']) ? (float)$order['comision_porcentaje'] : null;
+            $comision_imp     = isset($order['comision_importe'])    ? (float)$order['comision_importe']    : null;
+            $cuenta_emisora   = $order['cuenta_emisora']                 ?? null;
+
+            # Financiero
+            $total          = isset($order['total'])          ? (float)$order['total']          : null;
+            $anticipo       = isset($order['anticipo'])       ? (float)$order['anticipo']       : 0.00;
+            $descuento      = isset($order['descuento'])      ? (float)$order['descuento']      : 0.00;
+            $tipo_descuento = $order['tipo_descuento']        ?? 'G';
+            $iva            = isset($order['iva'])            ? (float)$order['iva']            : null;
+            $porcentaje_iva = isset($order['porcentaje_iva']) ? (float)$order['porcentaje_iva'] : null;
+
+            # Fechas
+            $fecha_pedido        = $order['fecha_pedido']        ?? null;
+            $fecha_inicio        = $order['fecha_inicio']        ?? null;
+            $fecha_entrega       = $order['fecha_entrega']       ?? null;
+            $hora_entrega_inicio = $order['hora_entrega_inicio'] ?? '00:00:00';
+            $hora_entrega_final  = $order['hora_entrega_final']  ?? '23:59:59';
+            $estimado            = $order['estimado']            ?? null;
+
+            # Dirección de entrega
+            $direccion_entrega = $order['direccion_entrega'] ?? 0;
+
+            # Estados
+            $pagado          = !empty($order['pagado'])          ? 1 : 0;
+            $entregado       = !empty($order['entregado'])       ? 1 : 0;
+            $cancelado       = !empty($order['cancelado'])       ? 1 : 0;
+            $descontar_stock = !empty($order['descontar_stock']) ? 1 : 0;
+            $facturado       = !empty($order['facturado'])       ? 1 : 0;
+
+            # Factura
+            $folio_fiscal = $order['folio_fiscal'] ?? null;
+            $rfc_emisor   = $order['rfc_emisor']   ?? null;
+            $rfc_receptor = $order['rfc_receptor'] ?? null;
+            $notas        = $order['notas']        ?? null;
+
+            $stmt = $db->prepare("
+                INSERT INTO orders (
+                    mypos_id, customer_id, noPedido,
+                    vendedor_id, vendedor_user, vendedor_nombre,
+                    id_productos, item_nombres, cantidad, precios,
+                    cuenta_receptora_id, cuenta_receptora_clabe, cuenta_receptora_beneficiario,
+                    comision_aizu_id, comision_nombre, comision_porcentaje, comision_importe,
+                    cuenta_emisora, forma_pago, metodo_pago, moneda, tasa_moneda,
+                    total, anticipo, descuento, tipo_descuento,
+                    iva, porcentaje_iva,
+                    direccion_entrega,
+                    fecha_pedido, fecha_inicio, fecha_entrega, estimado,
+                    hora_entrega_inicio, hora_entrega_final,
+                    pagado, entregado, cancelado, descontar_stock, facturado,
+                    folio_fiscal, rfc_emisor, rfc_receptor,
+                    notas
+                ) VALUES (
+                    ?, ?, ?,
+                    ?, ?, ?,
+                    ?, ?, ?, ?,
+                    ?, ?, ?,
+                    ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?,
+                    ?, ?,
+                    ?,
+                    ?, ?, ?, ?,
+                    ?, ?,
+                    ?, ?, ?, ?, ?,
+                    ?, ?, ?,
+                    ?
+                )
+            ");
+
+            $stmt->bind_param(
+                str_repeat('s', 44),
+                $myposId, $customer_id, $noPedido,
+                $vendedor_id, $vendedor_user, $vendedor_nombre,
+                $id_productos, $item_nombres, $cantidades, $precios,
+                $cuenta_rec_id, $cuenta_rec_clabe, $cuenta_rec_benef,
+                $comision_id, $comision_nombre, $comision_porc, $comision_imp,
+                $cuenta_emisora, $forma_pago, $metodo_pago, $moneda, $tasa_mon,
+                $total, $anticipo, $descuento, $tipo_descuento,
+                $iva, $porcentaje_iva,
+                $direccion_entrega,
+                $fecha_pedido, $fecha_inicio, $fecha_entrega, $estimado,
+                $hora_entrega_inicio, $hora_entrega_final,
+                $pagado, $entregado, $cancelado, $descontar_stock, $facturado,
+                $folio_fiscal, $rfc_emisor, $rfc_receptor,
+                $notas
+            );
+
+            if (!$stmt->execute()) {
+                $err = $stmt->error;
+                $stmt->close();
+                $created[] = [
+                    'noPedido' => $noPedido,
+                    'status'   => 'error',
+                    'code'     => $this->codeStr . '500',
+                    'answer'   => 'Error al guardar el pedido: ' . $err
+                ];
+                continue;
+            }
+
+            $id_interno = (int)$db->insert_id;
+            $stmt->close();
+
+            # Crear en plataformas
+            $platform_results = [];
+
+            foreach ($providers as $provider) {
+                $origen = $provider->getName();
+
+                # Verificar si ya está vinculado
+                $lnkStmt = $db->prepare("
+                    SELECT id FROM platform_orders
+                    WHERE mypos_id = ? AND id_interno = ? AND origen = ?
+                    LIMIT 1
+                ");
+                $lnkStmt->bind_param('sis', $myposId, $id_interno, $origen);
+                $lnkStmt->execute();
+                $lnkStmt->store_result();
+                $alreadyLinked = $lnkStmt->num_rows > 0;
+                $lnkStmt->close();
+
+                if ($alreadyLinked) {
+                    $platform_results[$origen] = [
+                        'status' => 'error',
+                        'code'   => $this->codeStr . '409',
+                        'answer' => "El pedido ya está vinculado a {$origen}"
+                    ];
+                    continue;
+                }
+
+                # Resolver id_externo del cliente para esta plataforma
+                $custExtStmt = $db->prepare("
+                    SELECT id_externo FROM platform_customers
+                    WHERE mypos_id = ? AND id_interno = ? AND origen = ?
+                    LIMIT 1
+                ");
+                $custExtStmt->bind_param('sis', $myposId, $customer_id, $origen);
+                $custExtStmt->execute();
+                $custExtStmt->bind_result($customer_ext_id);
+                $custExtStmt->fetch();
+                $custExtStmt->close();
+
+                # Resolver id_externo de cada producto para esta plataforma
+                $partesResolved = [];
+                foreach ($partes as $parte) {
+                    $item_aizu_id = $parte['item_aizu_id'] ?? null;
+                    $item_ext_id  = null;
+
+                    if ($item_aizu_id) {
+                        $ppStmt = $db->prepare("
+                            SELECT id_externo FROM platform_products
+                            WHERE mypos_id = ? AND id_interno = ? AND origen = ?
+                            LIMIT 1
+                        ");
+                        $ppStmt->bind_param('sis', $myposId, $item_aizu_id, $origen);
+                        $ppStmt->execute();
+                        $ppStmt->bind_result($item_ext_id);
+                        $ppStmt->fetch();
+                        $ppStmt->close();
+                    }
+
+                    $partesResolved[] = array_merge($parte, ['item_id' => $item_ext_id]);
+                }
+
+                $orderPayload = array_merge($order, [
+                    'customer_ext_id' => $customer_ext_id ?? null,
+                    'partes'          => $partesResolved,
+                ]);
+
+                $externalOrders = $provider->createOrder($orderPayload);
+
+                if (empty($externalOrders) || ($externalOrders['status'] ?? '') === 'error') {
+                    $platform_results[$origen] = [
+                        'status' => 'error',
+                        'code'   => $externalOrders['code']   ?? $this->codeStr . '502',
+                        'answer' => $externalOrders['answer'] ?? 'Sin respuesta de la plataforma'
+                    ];
+                    continue;
+                }
+
+                foreach ($externalOrders as $ext) {
+                    $id_externo = $ext['id_externo'] ?? null;
+                    if (!$id_externo) continue;
+
+                    $insStmt = $db->prepare("
+                        INSERT INTO platform_orders (mypos_id, id_interno, id_externo, origen)
+                        VALUES (?, ?, ?, ?)
+                    ");
+                    $insStmt->bind_param('siss', $myposId, $id_interno, $id_externo, $origen);
+                    $insStmt->execute();
+                    $insStmt->close();
+                }
+
+                $platform_results[$origen] = ['status' => 'ok'];
+            }
+
+            $created[] = [
+                'id_interno' => $id_interno,
+                'noPedido'   => $noPedido,
+                'status'     => 'ok',
+                'platforms'  => $platform_results
+            ];
+        }
+
+        return [
+            'action'  => 'createOrder',
+            'created' => $created
+        ];
+    }
+
+    # Actualiza uno o más pedidos en la BD y los propaga a sus plataformas vinculadas
+    public function updateOrder(array $data, array $session = []): array
+    {
+        $db      = (new Database())->connect();
+        $myposId = $session['mypos_id'] ?? '';
+        $updated = [];
+
+        foreach ($data as $order) {
+
+            $id_interno = $order['id_interno'] ?? null;
+
+            if (!$id_interno) {
+                $updated[] = [
+                    'status' => 'error',
+                    'code'   => $this->codeStr . '422',
+                    'answer' => 'El campo id_interno es obligatorio'
+                ];
+                continue;
+            }
+
+            # Verificar que el pedido existe
+            $chkStmt = $db->prepare("SELECT id FROM orders WHERE id = ? AND mypos_id = ? LIMIT 1");
+            $chkStmt->bind_param('is', $id_interno, $myposId);
+            $chkStmt->execute();
+            $chkStmt->store_result();
+
+            if ($chkStmt->num_rows === 0) {
+                $chkStmt->close();
+                $updated[] = [
+                    'id_interno' => $id_interno,
+                    'status'     => 'error',
+                    'code'       => $this->codeStr . '404',
+                    'answer'     => 'Pedido no encontrado'
+                ];
+                continue;
+            }
+            $chkStmt->close();
+
+            # Campos actualizables — tipo 'i' para tinyints, 's' para el resto
+            $scalarFields = [
+                'noPedido', 'vendedor_id', 'vendedor_user', 'vendedor_nombre',
+                'cuenta_receptora_id', 'cuenta_receptora_clabe', 'cuenta_receptora_beneficiario',
+                'comision_aizu_id', 'comision_nombre',
+                'cuenta_emisora', 'forma_pago', 'metodo_pago', 'moneda', 'tipo_descuento',
+                'folio_fiscal', 'rfc_emisor', 'rfc_receptor', 'notas',
+                'fecha_pedido', 'fecha_inicio', 'fecha_entrega', 'estimado',
+                'hora_entrega_inicio', 'hora_entrega_final',
+                # decimales — bind como 's', MySQL castea
+                'comision_porcentaje', 'comision_importe', 'tasa_moneda',
+                'total', 'anticipo', 'descuento', 'iva', 'porcentaje_iva',
+            ];
+            $intFields = ['pagado', 'entregado', 'cancelado', 'descontar_stock', 'facturado'];
+
+            $setClauses = [];
+            $setTypes   = '';
+            $setParams  = [];
+
+            foreach ($scalarFields as $field) {
+                if (array_key_exists($field, $order)) {
+                    $setClauses[] = "{$field} = ?";
+                    $setTypes    .= 's';
+                    $setParams[]  = $order[$field];
+                }
+            }
+
+            foreach ($intFields as $field) {
+                if (array_key_exists($field, $order)) {
+                    $setClauses[] = "{$field} = ?";
+                    $setTypes    .= 'i';
+                    $setParams[]  = (int)$order[$field];
+                }
+            }
+
+            # Si se envían partes, recalcular campos derivados
+            if (array_key_exists('partes', $order) && is_array($order['partes'])) {
+                $partes = $order['partes'];
+                $id_productos_arr = array_filter(
+                    array_map(fn($p) => isset($p['item_aizu_id']) ? (string)(int)$p['item_aizu_id'] : null, $partes)
+                );
+                $setClauses[] = 'id_productos = ?';  $setTypes .= 's'; $setParams[] = !empty($id_productos_arr) ? implode(',', array_values($id_productos_arr)) : '0';
+                $setClauses[] = 'item_nombres = ?';  $setTypes .= 's'; $setParams[] = mb_substr(implode(',', array_column($partes, 'item_nombre')), 0, 150);
+                $setClauses[] = 'cantidad = ?';      $setTypes .= 's'; $setParams[] = mb_substr(implode(',', array_column($partes, 'cant')),        0, 150);
+                $setClauses[] = 'precios = ?';       $setTypes .= 's'; $setParams[] = mb_substr(implode(',', array_column($partes, 'precio')),      0, 150);
+            }
+
+            if (empty($setClauses)) {
+                $updated[] = [
+                    'id_interno' => $id_interno,
+                    'status'     => 'error',
+                    'code'       => $this->codeStr . '422',
+                    'answer'     => 'No se enviaron campos a actualizar'
+                ];
+                continue;
+            }
+
+            $setClauses[] = 'updated_at = CURRENT_TIMESTAMP';
+            $setTypes    .= 'is';
+            $setParams[]  = $id_interno;
+            $setParams[]  = $myposId;
+
+            $sql     = 'UPDATE orders SET ' . implode(', ', $setClauses) . ' WHERE id = ? AND mypos_id = ?';
+            $updStmt = $db->prepare($sql);
+            $updStmt->bind_param($setTypes, ...$setParams);
+
+            if (!$updStmt->execute()) {
+                $updStmt->close();
+                $updated[] = [
+                    'id_interno' => $id_interno,
+                    'status'     => 'error',
+                    'code'       => $this->codeStr . '500',
+                    'answer'     => 'Error al actualizar el pedido'
+                ];
+                continue;
+            }
+            $updStmt->close();
+
+            # Propagar a plataformas vinculadas
+            $platform_results = [];
+
+            $platStmt = $db->prepare("
+                SELECT id_externo, origen
+                FROM platform_orders
+                WHERE mypos_id = ? AND id_interno = ?
+            ");
+            $platStmt->bind_param('si', $myposId, $id_interno);
+            $platStmt->execute();
+            $platRows = $platStmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $platStmt->close();
+
+            foreach ($platRows as $platRow) {
+                $id_externo = $platRow['id_externo'];
+                $origen     = $platRow['origen'];
+
+                if (!isset($this->providersByName[$origen])) continue;
+
+                $provider = $this->providersByName[$origen];
+                $response = $provider->updateOrder($id_externo, $order);
+
+                $platform_results[$origen] = ($response['status'] ?? '') === 'error'
+                    ? $response
+                    : ['status' => 'ok'];
+            }
+
+            $updated[] = [
+                'id_interno' => $id_interno,
+                'status'     => 'ok',
+                'platforms'  => $platform_results
+            ];
+        }
+
+        return [
+            'action'  => 'updateOrder',
+            'updated' => $updated
+        ];
+    }
+
+    # Vincula un pedido existente en la BD a una plataforma externa
+    public function linkOrder(array $data, array $session = [], array $platforms = []): array
+    {
+        $db        = (new Database())->connect();
+        $myposId   = $session['mypos_id'] ?? '';
+        $providers = $this->filterProviders($platforms);
+        $linked    = [];
+
+        foreach ($data as $item) {
+
+            $id_interno = $item['id_interno'] ?? null;
+
+            if (!$id_interno) {
+                $linked[] = [
+                    'status' => 'error',
+                    'code'   => $this->codeStr . '422',
+                    'answer' => 'El campo id_interno es obligatorio'
+                ];
+                continue;
+            }
+
+            # Obtener el pedido completo
+            $chkStmt = $db->prepare("
+                SELECT id, customer_id, noPedido, id_productos, item_nombres,
+                       cantidad, precios, total, notas, forma_pago, metodo_pago,
+                       moneda, tasa_moneda, fecha_pedido, fecha_inicio, fecha_entrega
+                FROM orders
+                WHERE id = ? AND mypos_id = ?
+                LIMIT 1
+            ");
+            $chkStmt->bind_param('is', $id_interno, $myposId);
+            $chkStmt->execute();
+            $order = $chkStmt->get_result()->fetch_assoc();
+            $chkStmt->close();
+
+            if (!$order) {
+                $linked[] = [
+                    'id_interno' => $id_interno,
+                    'status'     => 'error',
+                    'code'       => $this->codeStr . '404',
+                    'answer'     => 'Pedido no encontrado'
+                ];
+                continue;
+            }
+
+            $platform_results = [];
+
+            foreach ($providers as $provider) {
+                $origen = $provider->getName();
+
+                # Verificar si ya está vinculado
+                $lnkStmt = $db->prepare("
+                    SELECT id FROM platform_orders
+                    WHERE mypos_id = ? AND id_interno = ? AND origen = ?
+                    LIMIT 1
+                ");
+                $lnkStmt->bind_param('sis', $myposId, $id_interno, $origen);
+                $lnkStmt->execute();
+                $lnkStmt->store_result();
+                $alreadyLinked = $lnkStmt->num_rows > 0;
+                $lnkStmt->close();
+
+                if ($alreadyLinked) {
+                    $platform_results[$origen] = [
+                        'status' => 'error',
+                        'code'   => $this->codeStr . '409',
+                        'answer' => "El pedido ya está vinculado a {$origen}"
+                    ];
+                    continue;
+                }
+
+                # Resolver customer_ext_id
+                $custExtStmt = $db->prepare("
+                    SELECT id_externo FROM platform_customers
+                    WHERE mypos_id = ? AND id_interno = ? AND origen = ?
+                    LIMIT 1
+                ");
+                $custExtStmt->bind_param('sis', $myposId, $order['customer_id'], $origen);
+                $custExtStmt->execute();
+                $custExtStmt->bind_result($customer_ext_id);
+                $custExtStmt->fetch();
+                $custExtStmt->close();
+
+                $orderPayload = array_merge($order, [
+                    'customer_ext_id' => $customer_ext_id ?? null,
+                    'partes'          => [],
+                ]);
+
+                $externalOrders = $provider->createOrder($orderPayload);
+
+                if (empty($externalOrders) || ($externalOrders['status'] ?? '') === 'error') {
+                    $platform_results[$origen] = [
+                        'status' => 'error',
+                        'code'   => $externalOrders['code']   ?? $this->codeStr . '502',
+                        'answer' => $externalOrders['answer'] ?? 'Sin respuesta de la plataforma'
+                    ];
+                    continue;
+                }
+
+                foreach ($externalOrders as $ext) {
+                    $id_externo = $ext['id_externo'] ?? null;
+                    if (!$id_externo) continue;
+
+                    $insStmt = $db->prepare("
+                        INSERT INTO platform_orders (mypos_id, id_interno, id_externo, origen)
+                        VALUES (?, ?, ?, ?)
+                    ");
+                    $insStmt->bind_param('siss', $myposId, $id_interno, $id_externo, $origen);
+                    $insStmt->execute();
+                    $insStmt->close();
+                }
+
+                $platform_results[$origen] = ['status' => 'ok'];
+            }
+
+            $linked[] = [
+                'id_interno' => $id_interno,
+                'noPedido'   => $order['noPedido'],
+                'status'     => 'ok',
+                'platforms'  => $platform_results
+            ];
+        }
+
+        return [
+            'action' => 'linkOrder',
+            'linked' => $linked
+        ];
+    }
+
+    # Cancela uno o más pedidos en la BD y los propaga a sus plataformas vinculadas
+    public function cancelOrder(array $data, array $session = []): array
+    {
+        $db      = (new Database())->connect();
+        $myposId = $session['mypos_id'] ?? '';
+        $cancelled = [];
+
+        foreach ($data as $item) {
+
+            $id_interno = $item['id_interno'] ?? null;
+
+            if (!$id_interno) {
+                $cancelled[] = [
+                    'status' => 'error',
+                    'code'   => $this->codeStr . '422',
+                    'answer' => 'El campo id_interno es obligatorio'
+                ];
+                continue;
+            }
+
+            # Verificar que existe y no está ya cancelado
+            $chkStmt = $db->prepare("SELECT id, cancelado FROM orders WHERE id = ? AND mypos_id = ? LIMIT 1");
+            $chkStmt->bind_param('is', $id_interno, $myposId);
+            $chkStmt->execute();
+            $chkRow = $chkStmt->get_result()->fetch_assoc();
+            $chkStmt->close();
+
+            if (!$chkRow) {
+                $cancelled[] = [
+                    'id_interno' => $id_interno,
+                    'status'     => 'error',
+                    'code'       => $this->codeStr . '404',
+                    'answer'     => 'Pedido no encontrado'
+                ];
+                continue;
+            }
+
+            if ((int)$chkRow['cancelado'] === 1) {
+                $cancelled[] = [
+                    'id_interno' => $id_interno,
+                    'status'     => 'error',
+                    'code'       => $this->codeStr . '409',
+                    'answer'     => 'El pedido ya está cancelado'
+                ];
+                continue;
+            }
+
+            # Marcar cancelado en BD
+            $updStmt = $db->prepare("
+                UPDATE orders SET cancelado = 1, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND mypos_id = ?
+            ");
+            $updStmt->bind_param('is', $id_interno, $myposId);
+
+            if (!$updStmt->execute()) {
+                $updStmt->close();
+                $cancelled[] = [
+                    'id_interno' => $id_interno,
+                    'status'     => 'error',
+                    'code'       => $this->codeStr . '500',
+                    'answer'     => 'Error al cancelar el pedido'
+                ];
+                continue;
+            }
+            $updStmt->close();
+
+            # Propagar a plataformas vinculadas
+            $platform_results = [];
+
+            $platStmt = $db->prepare("
+                SELECT id_externo, origen
+                FROM platform_orders
+                WHERE mypos_id = ? AND id_interno = ?
+            ");
+            $platStmt->bind_param('si', $myposId, $id_interno);
+            $platStmt->execute();
+            $platRows = $platStmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $platStmt->close();
+
+            foreach ($platRows as $platRow) {
+                $id_externo = $platRow['id_externo'];
+                $origen     = $platRow['origen'];
+
+                if (!isset($this->providersByName[$origen])) continue;
+
+                $response = $this->providersByName[$origen]->cancelOrder($id_externo);
+
+                $platform_results[$origen] = ($response['status'] ?? '') === 'error'
+                    ? $response
+                    : ['status' => 'ok'];
+            }
+
+            $cancelled[] = [
+                'id_interno' => $id_interno,
+                'status'     => 'ok',
+                'platforms'  => $platform_results
+            ];
+        }
+
+        return [
+            'action'    => 'cancelOrder',
+            'cancelled' => $cancelled
+        ];
+    }
+
+    # Envía a las plataformas los pedidos que aún no tienen ningún vínculo externo
+    public function pushOrders(array $session = [], array $platforms = []): array
+    {
+        if (count($platforms) > 1) {
+            return [
+                'action' => 'pushOrders',
+                'status' => 'error',
+                'code'   => $this->codeStr . '422',
+                'answer' => 'En pushOrders solo se permite una plataforma en platforms[]'
+            ];
+        }
+
+        $providers = $this->filterProviders($platforms);
+
+        if (empty($providers)) {
+            return [
+                'action' => 'pushOrders',
+                'status' => 'error',
+                'answer' => 'No se encontraron plataformas válidas'
+            ];
+        }
+
+        $db      = (new Database())->connect();
+        $myposId = $session['mypos_id'] ?? '';
+
+        # Obtener pedidos sin ningún vínculo externo
+        $stmt = $db->prepare("
+            SELECT
+                o.id AS id_interno, o.customer_id, o.noPedido,
+                o.item_nombres, o.id_productos, o.cantidad, o.precios,
+                o.total, o.forma_pago, o.metodo_pago, o.moneda, o.tasa_moneda,
+                o.anticipo, o.descuento, o.tipo_descuento,
+                o.iva, o.porcentaje_iva,
+                o.fecha_pedido, o.fecha_inicio, o.fecha_entrega,
+                o.hora_entrega_inicio, o.hora_entrega_final, o.estimado,
+                o.notas, o.pagado, o.entregado, o.cancelado, o.facturado,
+                o.direccion_entrega
+            FROM orders o
+            WHERE o.mypos_id = ?
+            AND NOT EXISTS (
+                SELECT 1 FROM platform_orders po
+                WHERE po.mypos_id   = o.mypos_id
+                  AND po.id_interno = o.id
+            )
+        ");
+        $stmt->bind_param('s', $myposId);
+        $stmt->execute();
+        $unlinked = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        $stmt->close();
+
+        if (empty($unlinked)) {
+            return [
+                'action' => 'pushOrders',
+                'pushed' => [],
+                'answer' => 'Todos los pedidos ya están vinculados a al menos una plataforma'
+            ];
+        }
+
+        $pushed = [];
+
+        foreach ($unlinked as $order) {
+
+            $id_interno  = (int)$order['id_interno'];
+            $customer_id = (int)$order['customer_id'];
+
+            $platform_results = [];
+
+            foreach ($providers as $provider) {
+                $origen = $provider->getName();
+
+                # Resolver customer_ext_id
+                $custExtStmt = $db->prepare("
+                    SELECT id_externo FROM platform_customers
+                    WHERE mypos_id = ? AND id_interno = ? AND origen = ?
+                    LIMIT 1
+                ");
+                $custExtStmt->bind_param('sis', $myposId, $customer_id, $origen);
+                $custExtStmt->execute();
+                $custExtStmt->bind_result($customer_ext_id);
+                $custExtStmt->fetch();
+                $custExtStmt->close();
+
+                $orderPayload = array_merge($order, [
+                    'customer_ext_id' => $customer_ext_id ?? null,
+                    'partes'          => [],
+                ]);
+
+                $externalOrders = $provider->createOrder($orderPayload);
+
+                if (empty($externalOrders) || ($externalOrders['status'] ?? '') === 'error') {
+                    $platform_results[$origen] = [
+                        'status' => 'error',
+                        'code'   => $externalOrders['code']   ?? $this->codeStr . '502',
+                        'answer' => $externalOrders['answer'] ?? 'Sin respuesta de la plataforma'
+                    ];
+                    continue;
+                }
+
+                foreach ($externalOrders as $ext) {
+                    $id_externo = $ext['id_externo'] ?? null;
+                    if (!$id_externo) continue;
+
+                    $insStmt = $db->prepare("
+                        INSERT IGNORE INTO platform_orders (mypos_id, id_interno, id_externo, origen)
+                        VALUES (?, ?, ?, ?)
+                    ");
+                    $insStmt->bind_param('siss', $myposId, $id_interno, $id_externo, $origen);
+                    $insStmt->execute();
+                    $insStmt->close();
+                }
+
+                $platform_results[$origen] = ['status' => 'ok'];
+            }
+
+            $pushed[] = [
+                'id_interno' => $id_interno,
+                'noPedido'   => $order['noPedido'],
+                'status'     => 'ok',
+                'platforms'  => $platform_results
+            ];
+        }
+
+        return [
+            'action' => 'pushOrders',
+            'total'  => count($pushed),
+            'pushed' => $pushed
+        ];
+    }
+
     # <--- CUSTOMERS --->
 
     # Obtiene los clientes desde las APIs y los sincroniza con customers + address + platform_customers
@@ -2030,161 +2974,6 @@ class Ecommerce
             'updated' => $updated
         ];
     }
-
-    # public function deleteCustomer(array $data, array $session = [], array $platforms = []): array
-    # {
-    #     $db = (new Database())->connect();
-    #     $myposId = $session['mypos_id'] ?? '';
-
-    #     $deleteLocal = in_array('Local', $platforms, true);
-    #     $platformTargets = array_filter($platforms, fn($p) => $p !== 'Local');
-
-    #     $deleted = [];
-
-    #     foreach ($data as $customer) {
-    #         $id_interno = $customer['id_interno'] ?? null;
-
-    #         if (!$id_interno) {
-    #             $deleted[] = [
-    #                 'status' => 'error',
-    #                 'code' => $this->codeStr . '422',
-    #                 'answer' => 'El campo id_interno es obligatorio'
-    #             ];
-    #             continue;
-    #         }
-
-    #         # Verificar pertenencia
-    #         $chkStmt = $db->prepare("
-    #             SELECT id FROM customers
-    #             WHERE id = ? AND mypos_id = ?
-    #             LIMIT 1
-    #         ");
-    #         $chkStmt->bind_param('is', $id_interno, $myposId);
-    #         $chkStmt->execute();
-    #         $chkStmt->store_result();
-
-    #         if ($chkStmt->num_rows === 0) {
-    #             $chkStmt->close();
-    #             $deleted[] = [
-    #                 'id_interno' => $id_interno,
-    #                 'status' => 'error',
-    #                 'code' => $this->codeStr . '404',
-    #                 'answer' => 'Cliente no encontrado'
-    #             ];
-    #             continue;
-    #         }
-    #         $chkStmt->close();
-
-    #         $platform_results = [];
-
-    #         if ($deleteLocal) {
-    #             # Obtener todas las plataformas vinculadas y pedir eliminación
-    #             $platStmt = $db->prepare("
-    #                 SELECT id_externo, origen
-    #                 FROM platform_customers
-    #                 WHERE mypos_id = ? AND id_interno = ?
-    #             ");
-    #             $platStmt->bind_param('si', $myposId, $id_interno);
-    #             $platStmt->execute();
-    #             $platResult = $platStmt->get_result();
-
-    #             $allPlatRows = [];
-    #             while ($row = $platResult->fetch_assoc()) {
-    #                 $allPlatRows[] = $row;
-    #             }
-    #             $platStmt->close();
-
-    #             foreach ($allPlatRows as $platRow) {
-    #                 $id_externo = $platRow['id_externo'];
-    #                 $origen = $platRow['origen'];
-
-    #                 if (!isset($this->providersByName[$origen])) continue;
-
-    #                 $response = $this->providersByName[$origen]->deleteCustomer($id_externo);
-
-    #                 $platform_results[$origen] = ($response['status'] ?? '') === 'error' ? $response : ['status' => 'ok'];
-    #             }
-    #         } else {
-    #             # Solo eliminar en plataformas especificadas
-    #             foreach ($platformTargets as $origen) {
-    #                 if (!isset($this->providersByName[$origen])) {
-    #                     $platform_results[$origen] = [
-    #                         'status' => 'error',
-    #                         'code' => $this->codeStr . '404',
-    #                         'answer' => "Plataforma '{$origen}' no encontrada"
-    #                     ];
-    #                     continue;
-    #                 }
-
-    #                 $extStmt = $db->prepare("
-    #                     SELECT id_externo FROM platform_customers
-    #                     WHERE mypos_id = ? AND id_interno = ? AND origen = ?
-    #                     LIMIT 1
-    #                 ");
-    #                 $extStmt->bind_param('sis', $myposId, $id_interno, $origen);
-    #                 $extStmt->execute();
-    #                 $extStmt->bind_result($id_externo);
-    #                 $found = $extStmt->fetch();
-    #                 $extStmt->close();
-
-    #                 if (!$found || !$id_externo) {
-    #                     $platform_results[$origen] = [
-    #                         'status' => 'error',
-    #                         'code' => $this->codeStr . '404',
-    #                         'answer' => "Cliente no vinculado a {$origen}"
-    #                     ];
-    #                     continue;
-    #                 }
-
-    #                 $response = $this->providersByName[$origen]->deleteCustomer($id_externo);
-
-    #                 $platform_results[$origen] = ($response['status'] ?? '') === 'error' ? $response : ['status' => 'ok'];
-    #             }
-    #         }
-
-    #         # Eliminar registros de platform_customers para plataformas procesadas con éxito
-    #         foreach ($platform_results as $origen => $res) {
-    #             if (($res['status'] ?? '') !== 'ok') continue;
-
-    #             $delPlatStmt = $db->prepare("
-    #                 DELETE FROM platform_customers
-    #                 WHERE mypos_id = ? AND id_interno = ? AND origen = ?
-    #             ");
-    #             $delPlatStmt->bind_param('sis', $myposId, $id_interno, $origen);
-    #             $delPlatStmt->execute();
-    #             $delPlatStmt->close();
-    #         }
-
-    #         # Si se pidió Local, eliminar customer y addresses
-    #         if ($deleteLocal) {
-    #             $delAddrStmt = $db->prepare("
-    #                 DELETE FROM address WHERE mypos_id = ? AND customer_id = ?
-    #             ");
-    #             $delAddrStmt->bind_param('si', $myposId, $id_interno);
-    #             $delAddrStmt->execute();
-    #             $delAddrStmt->close();
-
-    #             $delCustStmt = $db->prepare("
-    #                 DELETE FROM customers WHERE id = ? AND mypos_id = ?
-    #             ");
-    #             $delCustStmt->bind_param('is', $id_interno, $myposId);
-    #             $delCustStmt->execute();
-    #             $delCustStmt->close();
-    #         }
-
-    #         $deleted[] = [
-    #             'id_interno' => $id_interno,
-    #             'deleted_local' => $deleteLocal,
-    #             'status' => 'ok',
-    #             'platforms' => $platform_results
-    #         ];
-    #     }
-
-    #     return [
-    #         'action' => 'deleteCustomer',
-    #         'deleted' => $deleted
-    #     ];
-    # }
 
     public function linkCustomer(array $data, array $session = [], array $platforms = []): array
     {
